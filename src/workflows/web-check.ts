@@ -1,13 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { restrictedHttpGet, type HttpGetPolicy } from "../../capabilities/web/restricted-http-get.ts";
+import { restrictedHttpGet, type HttpGetPolicy, type HttpRequestControl } from "../../capabilities/web/restricted-http-get.ts";
 import { EvidenceStore } from "../evidence/evidence-store.ts";
 import { generateHeaderCheckReport } from "../reporting/header-check-report.ts";
 import type { ScopeConfig } from "../scope/scope-guard.ts";
 
 /** 单次受限观察 → 保存证据 → 离线检查 → 中文报告。命令行与 OpenCode 共用。 */
-export async function runWebCheck(projectRoot: string, targetUrl: string) {
+export async function runWebCheck(projectRoot: string, targetUrl: string, control: HttpRequestControl = {}) {
   if (typeof targetUrl !== "string" || !targetUrl.trim()) {
     return { ok: false as const, code: "INVALID_INPUT", reason: "请输入一个完整的 HTTP(S) URL" };
   }
@@ -25,7 +25,7 @@ export async function runWebCheck(projectRoot: string, targetUrl: string) {
     return { ok: false as const, code: "CONFIG_ERROR", reason: "无法读取项目的范围配置或 HTTP 配置，检查未启动" };
   }
 
-  const http = await restrictedHttpGet(targetUrl, scope, policy);
+  const http = await restrictedHttpGet(targetUrl, scope, policy, control);
   if (!http.ok || !http.response) {
     return { ok: false as const, code: "HTTP_REJECTED", cause: http.code,
       reason: `未取得可用于检查的响应（${http.code}），请核对目标、授权范围和连接情况` };

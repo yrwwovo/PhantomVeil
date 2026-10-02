@@ -2,6 +2,7 @@ import { tool } from "@opencode-ai/plugin";
 import { fileURLToPath } from "node:url";
 
 import { runAuthorizedReflectedXssAssessment } from "../../src/workflows/reflected-xss-assessment.ts";
+import { sessionRequestControl } from "../../src/budget/session-request-budget.ts";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -31,7 +32,8 @@ export default tool({
       }
       : undefined;
     return JSON.stringify(await runAuthorizedReflectedXssAssessment(
-      projectRoot, args, { approve },
+      projectRoot, args, { approve,
+        request_control: sessionRequestControl(projectRoot, context?.sessionID) },
     ), null, 2);
   },
 });

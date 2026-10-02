@@ -5,7 +5,8 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { extractPageLinks } from "../../capabilities/web/crawl-links.ts";
 import { inventoryPageInputs, type PageInputInventory } from "../../capabilities/web/input-inventory.ts";
-import { restrictedHttpGet, validatePolicy, type HttpGetPolicy } from "../../capabilities/web/restricted-http-get.ts";
+import { restrictedHttpGet, validatePolicy, type HttpGetPolicy, type HttpRequestControl } from "../../capabilities/web/restricted-http-get.ts";
+import { TASK_BUDGET_EXHAUSTED, TASK_BUDGET_UNAVAILABLE } from "../budget/session-request-budget.ts";
 import { EvidenceStore } from "../evidence/evidence-store.ts";
 import { generateHeaderCheckReport } from "../reporting/header-check-report.ts";
 import { checkUrlScope, type ScopeConfig } from "../scope/scope-guard.ts";
@@ -68,7 +69,7 @@ function safeText(value: string): string {
 }
 
 /** 有界、串行、同源的普通链接发现；模型只能提供起始 URL。 */
-export async function runWebCrawl(projectRoot: string, targetUrl: string) {
+export async function runWebCrawl(projectRoot: string, targetUrl: string, control: HttpRequestControl = {}) {
   let seed: URL;
   try {
     if (typeof targetUrl !== "string") throw new Error();
@@ -176,6 +177,8 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string) {
         if (requests >= policy.max_requests) return blockReason = "request_limit";
         const remaining = policy.delay_ms - (performance.now() - lastRequest);
         if (remaining > 0) await delay(remaining);
+        const budgetBlock = await control.before_request?.(url);
+        if (budgetBlock) return blockReason = budgetBlock;
         requested.add(url);
         requests++;
         lastRequest = performance.now();
@@ -185,6 +188,9 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string) {
     if (!response.ok || !response.response) {
       pages.push({ ...item, code: blockReason ?? response.code });
       if (blockReason === "request_limit") { stopReason = "request_limit"; break; }
+      if (blockReason === TASK_BUDGET_EXHAUSTED || blockReason === TASK_BUDGET_UNAVAILABLE) {
+        stopReason = blockReason; break;
+      }
       continue;
     }
     const final = response.response;
@@ -238,7 +244,9 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string) {
     conclusion: "输入入口来自静态 HTML，只用于后续测试规划；未执行 JavaScript、提交表单或确认漏洞。",
   };
   const stopLabels: Record<string, string> = { queue_exhausted: "本次可跟进链接已处理", page_limit: "达到页面上限",
-    request_limit: "达到请求上限", storage_error: "保存记录失败" };
+    request_limit: "达到请求上限", storage_error: "保存记录失败",
+    [TASK_BUDGET_EXHAUSTED]: "达到整次会话请求预算",
+    [TASK_BUDGET_UNAVAILABLE]: "无法读取整次会话请求预算，已停止" };
   const userSummary = [
     `目标：${seed.href}`, `有限范围信息收集结束：${stopLabels[stopReason]}。`,
     `检查 ${checked.length} 个响应；未完成 ${failed} 项；请求尝试 ${requests} 次（含重定向）。`,

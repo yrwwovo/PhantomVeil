@@ -7,6 +7,7 @@ import test, { type TestContext } from "node:test";
 
 import tool from "../.opencode/tools/authorized_reflected_xss_assessment.ts";
 import { runAuthorizedReflectedXssAssessment } from "../src/workflows/reflected-xss-assessment.ts";
+import { sessionRequestControl, TASK_BUDGET_EXHAUSTED } from "../src/budget/session-request-budget.ts";
 
 const REFERENCE = "LOCAL-LAB-ACTIVE";
 
@@ -185,6 +186,23 @@ test("参数上限限制单次任务请求量但不要求逐参数批准", async
   assert.equal(result.result.hypotheses_linked, 3);
   assert.equal(f.hits.length, 7);
   assert.match(result.user_summary, /达到本次参数上限 3/u);
+});
+
+test("组合评估耗尽共享预算后停止，不发送下一次编码探针", async t => {
+  const f = await fixture(t);
+  const stateRoot = await mkdtemp(path.join(tmpdir(), "pveil-assessment-budget-"));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  await writeFile(path.join(f.root, "configs", "request-budget.local.json"),
+    JSON.stringify({ max_requests: 2 }));
+  const result = await runAuthorizedReflectedXssAssessment(f.root, {
+    url: `${f.origin}/`, authorization_reference: REFERENCE,
+  }, { approve: async () => {}, wait: async () => {},
+    request_control: sessionRequestControl(f.root, "budgeted-assessment", stateRoot) });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "ASSESSMENT_PARTIAL");
+  assert.equal(result.result.stop_reason, TASK_BUDGET_EXHAUSTED);
+  assert.equal(f.hits.length, 2);
+  assert.match(f.hits[1], /^\/search\?q=PV-REFLECT-/u);
 });
 
 test("OpenCode 组合工具只接受目标和授权引用，并执行一次任务级审批", async () => {

@@ -3,7 +3,8 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { inventoryPageInputs } from "../../../capabilities/web/input-inventory.ts";
-import { restrictedHttpGet, validatePolicy, type HttpGetPolicy } from "../../../capabilities/web/restricted-http-get.ts";
+import { restrictedHttpGet, validatePolicy, type HttpGetPolicy, type HttpRequestControl } from "../../../capabilities/web/restricted-http-get.ts";
+import { TASK_BUDGET_EXHAUSTED, TASK_BUDGET_UNAVAILABLE } from "../../budget/session-request-budget.ts";
 import { EvidenceStore, loadVerifiedEvidenceFile } from "../../evidence/evidence-store.ts";
 import { generateParameterReflectionReport, type ParameterReflectionResult } from "../../reporting/parameter-reflection-report.ts";
 import { checkActionAuthorization, type AuthorizationRegistry } from "../../scope/authorization-registry.ts";
@@ -40,6 +41,7 @@ function countOccurrences(body: string, marker: string): number {
 export async function runAuthorizedParameterReflectionCheck(
   projectRoot: string,
   input: AuthorizedParameterReflectionInput,
+  control: HttpRequestControl = {},
 ) {
   if (!input || typeof input.evidence_id !== "string" || !EVIDENCE_ID.test(input.evidence_id) ||
       !Number.isInteger(input.form_index) || input.form_index < 1 || input.form_index > 50 ||
@@ -123,8 +125,11 @@ export async function runAuthorizedParameterReflectionCheck(
     max_response_bytes: Math.min(httpPolicy.max_response_bytes, 131072),
     max_redirects: 0,
   };
-  const http = await restrictedHttpGet(scoped.target.url, scope, boundedPolicy);
+  const http = await restrictedHttpGet(scoped.target.url, scope, boundedPolicy, control);
   if (!http.ok || !http.response) {
+    if (http.reason === TASK_BUDGET_EXHAUSTED || http.reason === TASK_BUDGET_UNAVAILABLE) {
+      return { ok: false as const, code: http.reason, reason: "整次会话请求预算耗尽或不可用，未发送参数检查请求" };
+    }
     return { ok: false as const, code: "HTTP_REJECTED", cause: http.code,
       reason: `主动检查未取得响应（${http.code}）；没有生成成功证据` };
   }

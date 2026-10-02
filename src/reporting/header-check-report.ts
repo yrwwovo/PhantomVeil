@@ -3,7 +3,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { checkHttpSecurityHeaders, type SecurityHeaderCheckResult } from "../../capabilities/web/security-header-check.ts";
-import { loadVerifiedEvidenceFile } from "../evidence/evidence-store.ts";
+import { loadVerifiedEvidenceFile, type EvidenceRecord } from "../evidence/evidence-store.ts";
 
 // 用户摘要不包含查询串或片段，避免把 URL 中的业务秘密展示到模型和报告。
 function displayTarget(value: string): string {
@@ -35,6 +35,28 @@ export function summarizeHeaderCheck(result: SecurityHeaderCheckResult): string 
   return lines.join("\n");
 }
 
+function renderHeaderCheckReport(
+  reportId: string,
+  generatedAt: string,
+  record: EvidenceRecord,
+  result: SecurityHeaderCheckResult,
+  summary: string,
+): string {
+  return [
+    "# 单 URL 安全检查报告", "",
+    ...summary.split("\n").map((line) => `${escapeMarkdown(line)}\n`),
+    "## 追溯信息", "",
+    `- 报告编号：${reportId}`,
+    `- 生成时间：${generatedAt}`,
+    `- 证据编号：${escapeMarkdown(record.evidence_id)}`,
+    `- 观察时间：${escapeMarkdown(record.created_at)}`,
+    `- 规则版本：${result.check_id}`,
+    `- 证据 SHA-256：${escapeMarkdown(record.integrity.payload_sha256)}`,
+    `- 重定向次数：${record.observation.redirects.length}`, "",
+    "CSP 当前只检查是否存在，页面嵌入限制只作基础检查；通过不代表策略足够严格。", "",
+  ].join("\n");
+}
+
 /** 从证据重新校验、执行规则并生成报告，不能由模型直接提供检查结论。 */
 export async function generateHeaderCheckReport(evidenceFile: string, outputDir: string) {
   const loaded = await loadVerifiedEvidenceFile(evidenceFile);
@@ -52,19 +74,7 @@ export async function generateHeaderCheckReport(evidenceFile: string, outputDir:
   const directory = path.resolve(outputDir);
   const filePath = path.join(directory, `${reportId}.md`);
   const temporaryPath = path.join(directory, `.${reportId}.${randomUUID()}.tmp`);
-  const markdown = [
-    "# 单 URL 安全检查报告", "",
-    ...summary.split("\n").map((line) => `${escapeMarkdown(line)}\n`),
-    "## 追溯信息", "",
-    `- 报告编号：${reportId}`,
-    `- 生成时间：${generatedAt}`,
-    `- 证据编号：${escapeMarkdown(loaded.record.evidence_id)}`,
-    `- 观察时间：${escapeMarkdown(loaded.record.created_at)}`,
-    `- 规则版本：${result.check_id}`,
-    `- 证据 SHA-256：${escapeMarkdown(loaded.record.integrity.payload_sha256)}`,
-    `- 重定向次数：${loaded.record.observation.redirects.length}`, "",
-    "CSP 当前只检查是否存在，页面嵌入限制只作基础检查；通过不代表策略足够严格。", "",
-  ].join("\n");
+  const markdown = renderHeaderCheckReport(reportId, generatedAt, loaded.record, result, summary);
   try {
     await mkdir(directory, { recursive: true });
     await writeFile(temporaryPath, markdown, { encoding: "utf8", flag: "wx", mode: 0o600 });

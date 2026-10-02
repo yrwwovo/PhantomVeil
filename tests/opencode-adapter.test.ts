@@ -112,6 +112,8 @@ test("OpenCode 适配层不能绕过项目授权配置", async (context) => {
 
   assert.equal(result.ok, false);
   assert.equal(result.code, "HTTP_REJECTED");
+  assert.equal(result.request_code, "SCOPE_DENIED");
+  assert.equal(typeof result.scope_code, "string");
 });
 
 test("OpenCode 工具从自身位置读取项目配置，不依赖会话目录", async () => {

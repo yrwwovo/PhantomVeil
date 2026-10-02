@@ -2,6 +2,7 @@ import { tool } from "@opencode-ai/plugin";
 import { fileURLToPath } from "node:url";
 
 import { runAuthorizedXssEncodingProbe } from "../../src/adapters/opencode/authorized-xss-encoding-probe.ts";
+import { sessionRequestControl } from "../../src/budget/session-request-budget.ts";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -32,6 +33,7 @@ export default tool({
       return JSON.stringify({ ok: false, code: "APPROVAL_DENIED",
         reason: "用户未批准本次编码探针；未执行网络请求" }, null, 2);
     }
-    return JSON.stringify(await runAuthorizedXssEncodingProbe(projectRoot, args), null, 2);
+    return JSON.stringify(await runAuthorizedXssEncodingProbe(projectRoot, args,
+      sessionRequestControl(projectRoot, context.sessionID)), null, 2);
   },
 });

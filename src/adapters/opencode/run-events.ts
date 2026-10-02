@@ -8,7 +8,8 @@ function record(value: unknown): Record<string, unknown> | null {
 
 export function normalizeOpenCodeEvents(events: unknown[]): AgentRunEvents {
   const tools = new Map<string, AgentToolEvent>();
-  const text: string[] = [];
+  let lastMessageId: string | null = null;
+  let lastTextParts = new Map<string, string>();
   let error: string | null = null;
   let input = 0;
   let output = 0;
@@ -25,15 +26,27 @@ export function normalizeOpenCodeEvents(events: unknown[]): AgentRunEvents {
     }
     const part = record(event.part);
     if (!part) continue;
-    if (part.type === "text" && typeof part.text === "string") text.push(part.text);
+    if (part.type === "text" && typeof part.text === "string") {
+      const messageId = typeof part.messageID === "string" ? part.messageID : null;
+      if (messageId === null || messageId !== lastMessageId) {
+        lastTextParts = new Map();
+        lastMessageId = messageId;
+      }
+      const partId = typeof part.id === "string" ? part.id : `part-${lastTextParts.size}`;
+      lastTextParts.set(partId, part.text);
+    }
     if (part.type === "tool" && typeof part.tool === "string") {
+      // A tool call after a text part means that text was not the final answer.
+      lastTextParts = new Map();
+      lastMessageId = null;
       const state = record(part.state);
       const key = typeof part.callID === "string" ? part.callID : `${part.tool}-${tools.size}`;
+      const previous = tools.get(key);
       tools.set(key, {
         name: part.tool,
         status: typeof state?.status === "string" ? state.status : "unknown",
-        input: state?.input,
-        output: state?.output,
+        input: state?.input ?? previous?.input,
+        output: state?.output ?? previous?.output,
       });
     }
     if (part.type === "step-finish") {
@@ -46,7 +59,7 @@ export function normalizeOpenCodeEvents(events: unknown[]): AgentRunEvents {
     }
   }
   return {
-    tools: [...tools.values()], final_text: text.join("\n").trim(), error,
+    tools: [...tools.values()], final_text: [...lastTextParts.values()].join("\n").trim(), error,
     token_usage: sawTokens ? { input, output } : null,
   };
 }

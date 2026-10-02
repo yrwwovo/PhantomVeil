@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { HttpRequestControl } from "../../capabilities/web/restricted-http-get.ts";
+import { TASK_BUDGET_EXHAUSTED, TASK_BUDGET_UNAVAILABLE } from "../budget/session-request-budget.ts";
 
 import { runAuthorizedParameterReflectionCheck } from "../adapters/opencode/authorized-parameter-reflection-check.ts";
 import { runAuthorizedXssEncodingProbe } from "../adapters/opencode/authorized-xss-encoding-probe.ts";
@@ -33,6 +35,7 @@ export interface ReflectedXssAssessmentDependencies {
     may_write_hypotheses: true;
   }) => Promise<void>;
   wait?: (milliseconds: number) => Promise<void>;
+  request_control?: HttpRequestControl;
 }
 
 interface Candidate {
@@ -62,6 +65,7 @@ const SENSITIVE_PARAMETER = /(?:csrf|delete|file|logout|password|passwd|remove|s
 const SAFE_CONTROL_TYPES = new Set(["text", "search", "email", "url", "tel", "number", "textarea", "select"]);
 const FATAL_CODES = new Set([
   "AUTHORIZATION_DENIED", "CONFIG_ERROR", "EVIDENCE_ERROR", "HTTP_REJECTED", "SCOPE_DENIED",
+  TASK_BUDGET_EXHAUSTED, TASK_BUDGET_UNAVAILABLE,
 ]);
 
 function validPolicy(value: unknown): value is ReflectedXssAssessmentPolicy {
@@ -197,9 +201,13 @@ export async function runAuthorizedReflectedXssAssessment(
       reason: "用户未批准本次主动评估；未执行网络请求" };
   }
 
-  const crawl = await runWebCrawl(root, scoped.target.url);
+  const crawl = await runWebCrawl(root, scoped.target.url, dependencies.request_control);
   if (!("pages" in crawl)) {
     return { ok: false as const, code: "CRAWL_FAILED", reason: crawl.reason };
+  }
+  if (crawl.stop_reason === TASK_BUDGET_EXHAUSTED || crawl.stop_reason === TASK_BUDGET_UNAVAILABLE) {
+    return { ok: false as const, code: crawl.stop_reason,
+      reason: "整次会话请求预算耗尽或不可用，主动评估已停止", crawl_report_file: crawl.report_file };
   }
 
   const candidates: Candidate[] = [];
@@ -231,6 +239,7 @@ export async function runAuthorizedReflectedXssAssessment(
   const selected = candidates.slice(0, policy.max_parameters);
   const items: AssessmentItem[] = [];
   let stoppedEarly = false;
+  let stopReason: string | null = null;
   const wait = dependencies.wait ?? (milliseconds => delay(milliseconds).then(() => undefined));
   for (const candidate of selected) {
     await wait(policy.delay_ms);
@@ -239,11 +248,12 @@ export async function runAuthorizedReflectedXssAssessment(
       form_index: candidate.form_index,
       parameter_name: candidate.parameter_name,
       authorization_reference: input.authorization_reference,
-    });
+    }, dependencies.request_control);
     if (!reflection.ok) {
       items.push({ ...candidate, reflection: "failed", code: reflection.code, reason: reflection.reason });
       if (FATAL_CODES.has(reflection.code)) {
         stoppedEarly = true;
+        stopReason = reflection.code;
         break;
       }
       continue;
@@ -259,7 +269,7 @@ export async function runAuthorizedReflectedXssAssessment(
       const encoding = await runAuthorizedXssEncodingProbe(root, {
         evidence_id: reflection.trace.evidence_id,
         authorization_reference: input.authorization_reference,
-      });
+      }, dependencies.request_control);
       if (!encoding.ok) {
         item.encoding_outcome = `failed_${encoding.code.toLowerCase()}`;
         item.code = encoding.code;
@@ -267,6 +277,7 @@ export async function runAuthorizedReflectedXssAssessment(
         items.push(item);
         if (FATAL_CODES.has(encoding.code)) {
           stoppedEarly = true;
+          stopReason = encoding.code;
           break;
         }
         continue;
@@ -288,6 +299,7 @@ export async function runAuthorizedReflectedXssAssessment(
         item.reason = triage.reason;
         items.push(item);
         stoppedEarly = true;
+        stopReason = triage.code;
         break;
       }
     }
@@ -315,7 +327,7 @@ export async function runAuthorizedReflectedXssAssessment(
     `跳过 ${skippedHighImpact} 个密码、文件、秘密参数或明显高影响路径候选。`,
     candidates.length > policy.max_parameters ? `达到本次参数上限 ${policy.max_parameters}，其余候选未执行。` :
       "未达到本次参数检查上限。",
-    stoppedEarly ? "遇到授权、网络、证据或配置级失败后提前停止，未绕过限制重试。" :
+    stoppedEarly ? `遇到 ${stopReason} 后提前停止，未绕过限制重试。` :
       "没有执行 POST、登录注册、数据修改、脚本载荷或高风险操作；HYP 只会记录为 suspected。",
   ].join("\n");
   return {
@@ -325,7 +337,8 @@ export async function runAuthorizedReflectedXssAssessment(
     result: { policy, candidates_discovered: candidates.length, skipped_high_impact: skippedHighImpact,
       checked: items.length, reflected, sensitive_contexts: sensitive,
       encoding_checked: encodingChecked, raw_character_candidates: rawCandidates,
-      hypotheses_linked: hypothesesLinked, stopped_early: stoppedEarly, items },
+      hypotheses_linked: hypothesesLinked, stopped_early: stoppedEarly,
+      stop_reason: stopReason, items },
     trace: { report_id: report.report_id, report_file: report.report_file },
   };
 }

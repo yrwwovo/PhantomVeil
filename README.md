@@ -59,6 +59,8 @@ pveil --help
 
 无论从对话还是快捷命令进入，目标访问仍由现有工作流执行并经过 Scope Guard。`pveil` 不启用 OpenCode 的自动批准参数，也不会为 Agent 恢复 Shell、任意网络或文件编辑能力。
 
+OpenCode 会话中的六个联网工具还共享请求尝试预算：默认每会话 20 次，重定向每跳计数，预算耗尽或记录不可用时停止发送。可在首次请求前将 `configs/request-budget.example.json` 复制为 `configs/request-budget.local.json` 并设置 1–100 次上限；本机配置不会提交。`pveil check`、`pveil crawl` 等直接运行的命令继续使用各自上限，不计入 OpenCode 会话预算。一个交互式会话可能包含多次用户任务，当前预算按会话累计。
+
 ### 自动发现并检查站内页面
 
 受限爬虫已实现。首次安装依赖后，可以运行：

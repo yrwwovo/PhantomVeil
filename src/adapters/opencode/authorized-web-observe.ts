@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   restrictedHttpGet,
   type HttpGetPolicy,
+  type HttpRequestControl,
 } from "../../../capabilities/web/restricted-http-get.ts";
 import { EvidenceStore } from "../../evidence/evidence-store.ts";
 import { generateMarkdownReport } from "../../reporting/markdown-report.ts";
@@ -29,6 +30,8 @@ export type AuthorizedWebObserveResult =
         | "EVIDENCE_ERROR"
         | "REPORT_ERROR";
       reason: string;
+      request_code?: string;
+      scope_code?: string;
     };
 
 async function readJson<T>(filePath: string): Promise<T> {
@@ -42,6 +45,7 @@ async function readJson<T>(filePath: string): Promise<T> {
 export async function runAuthorizedWebObservation(
   projectRoot: string,
   targetUrl: string,
+  control: HttpRequestControl = {},
 ): Promise<AuthorizedWebObserveResult> {
   const root = path.resolve(projectRoot);
   let scopeConfig: ScopeConfig;
@@ -61,12 +65,14 @@ export async function runAuthorizedWebObservation(
     };
   }
 
-  const httpResult = await restrictedHttpGet(targetUrl, scopeConfig, httpPolicy);
+  const httpResult = await restrictedHttpGet(targetUrl, scopeConfig, httpPolicy, control);
   if (!httpResult.ok || !httpResult.response) {
     return {
       ok: false,
       code: "HTTP_REJECTED",
       reason: httpResult.reason,
+      request_code: httpResult.code,
+      ...(httpResult.scope_decision ? { scope_code: httpResult.scope_decision.code } : {}),
     };
   }
 
