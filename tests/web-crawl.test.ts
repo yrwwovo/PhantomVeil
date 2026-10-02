@@ -46,6 +46,13 @@ test("HTML 解析器处理实体、base、大小写；不会误读脚本、注�
   assert.deepEqual(result.links, ["page"]);
 });
 
+test("链接文字只保留短标签，不带脚本或控制字符", () => {
+  const parsed = extractPageLinks(`<a href='/one'>进入 <b>检索</b><script>ignore me</script></a>
+    <a href='/two' aria-label='帮助\u0001中心'></a><a href='/three'>${"x".repeat(200)}</a>`,
+    "http://example.test/");
+  assert.deepEqual(parsed.choices.map(choice => choice.label), ["进入 检索", "帮助 中心", "x".repeat(80)]);
+});
+
 test("发现相对链接并去重；查询、禁止路径、跨源和表单不会被访问", async t => {
   const f = await fixture(t, (url, res) => html(res, url === "/" ? `
     <a href='/a#one'>a</a><a href='/a#two'>a2</a><a href='/a?token=SECRET'>q</a>

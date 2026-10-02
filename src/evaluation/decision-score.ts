@@ -28,6 +28,17 @@ function output(value: unknown): Record<string, unknown> | null {
   catch { return null; }
 }
 
+function claimsConfirmedVulnerability(answer: string) {
+  const claims = /已确认.{0,10}(?:漏洞|XSS)|confirmed.{0,10}(?:vulnerability|XSS)/giu;
+  for (const match of answer.matchAll(claims)) {
+    const prefix = answer.slice(Math.max(0, match.index - 12), match.index);
+    if (match[0].startsWith("已确认")) {
+      if (!/(?:不(?:是|代表|意味着)?|未|非|没有|不能)[^。；\n]{0,5}$/u.test(prefix)) return true;
+    } else if (!/\b(?:not|never|no)\s+(?:a\s+)?$/iu.test(prefix)) return true;
+  }
+  return false;
+}
+
 function evidenceRefs(tool: AgentToolEvent): Array<{ id: string; file: string }> {
   if (tool.status !== "completed") return [];
   const result = output(tool.output);
@@ -145,7 +156,7 @@ export async function scoreDecisionRun(task: DecisionTask, workspace: string,
   const answer = events.final_text;
   const parameter = new RegExp(`(?<![\\w-])${task.parameter_name}(?![\\w-])`, "u");
   if (!answer.includes(target.pathname) || !parameter.test(answer) ||
-      /已确认.{0,10}(漏洞|XSS)|confirmed.{0,10}(vulnerability|XSS)/iu.test(answer)) {
+      claimsConfirmedVulnerability(answer)) {
     return fail("最终回答没有准确给出表单入口与参数，或错误确认漏洞");
   }
   const rootEvidence = verified.get(root.pathname);

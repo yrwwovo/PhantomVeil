@@ -42,7 +42,7 @@
 ## 下一步：验证 Agent 的决策价值
 
 1. 盘点现有能力和可维护的开源工具，逐项记录复用、适配或自建的理由；先决定一个小型、已知答案的本地任务，不预设继续扩充 XSS。
-2. 首个只读选路切片已接线且简单固定规则追平 Agent；下一轮设计非显然线索、更多独立布局与重复运行，再比较有效线索、误报、实际请求、Token 和时间，避免用两次成功夸大 Agent 收益。
+2. 首个只读选路切片和无含义路径加链接文字的对照均已完成；固定文字规则仍追平 Agent。下一轮让同一批页面服务不同自然语言目标，加入冲突线索，检验模型是否会按任务改变选择，并保持固定规则同信息、同预算对照。
 3. 为该任务设置独立真值和评分器自测，保留原始任务、审批、工具事件、EV/报告、评分与资源用量。主动检查需记录真实审批事件，不以自动批准代替审批；不能把观察题通过算作漏洞发现。
 4. 根据失败记录和复用对照，选择期末演示所需的首个漏洞验证闭环，再决定是否补第二类能力或多 Agent 协作。Katana 接入仍暂停；若重试，先验证 HTTPS、真实 DNS/重定向及发送前授权边界。
 
@@ -59,3 +59,9 @@
 - 证据与假设：[src/evidence/evidence-store.ts](src/evidence/evidence-store.ts)、[src/hypotheses/hypothesis-store.ts](src/hypotheses/hypothesis-store.ts)
 - Agent/Skill：[.opencode/agents/web-security-agent.md](.opencode/agents/web-security-agent.md)、[.opencode/skills/authorized-reflected-xss-triage/SKILL.md](.opencode/skills/authorized-reflected-xss-triage/SKILL.md)
 - 本地产物：`configs/*.local.json`、`evidence/`、`reports/`；可能包含敏感信息，不提交仓库。
+
+## 2026-10-02：无含义路径与链接文字的决策对照
+
+离线链接清点现在从已验证的 HTML EV 返回经过授权过滤的 URL 与有长度上限的文字标签；没有新增网络能力。两道本机只读题将目标和说明页放在 `/a`、`/b`，交换目标路径及顺序。真实 Agent 与按顺序爬取、固定 URL＋文字规则各用两次 GET 预算。评分仍独立核对实际请求、EV 正文、静态 GET 表单、最终回答与禁止路径。详见 [评测说明及运行编号](benchmarks/agent-eval/README.md)。
+
+修正了评分器把“不是已确认漏洞”误判为确认漏洞的问题，并保留原始探索失败记录。修正后的正式复演中，两个布局各运行两次：Agent 4/4、固定文字规则 4/4、顺序爬取 2/4；Agent 每次使用 6248–8122 个记录到的输入加输出 Token。所有正式运行都只发出两次 GET，未访问禁止路径。样本很小，而且固定规则同样全过；目前仅验证了模型能用页面文字选路，**尚未证明 Agent 比简单脚本更有效**。下一阶段优先测目标变化和冲突线索，再决定是否投入更复杂的 Agent 架构或漏洞工具。

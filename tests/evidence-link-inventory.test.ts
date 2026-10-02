@@ -16,7 +16,7 @@ async function fixture(t: TestContext) {
     allowed_schemes: ["http"], allowed_hosts: ["127.0.0.1"], allowed_ports: [5000],
     allowed_paths: ["/"], denied_paths: ["/blocked"],
   }));
-  const body = `<!doctype html><a href="/guide">guide</a><a href="/search">search</a>
+  const body = `<!doctype html><a href="/guide">检索 <strong>说明</strong></a><a href="/search">进入\n检索</a>
     <a href="/blocked">blocked</a><a href="https://other.test/">external</a>
     <a href="/search?q=private-value">query</a><a href="/search">duplicate</a>`;
   const saved = await new EvidenceStore({ output_dir: path.join(root, "evidence", "opencode") })
@@ -34,9 +34,15 @@ test("只读链接清点只返回授权同源无参数路径", async t => {
   const before = await readFile(saved.file_path, "utf8");
   const result = await runEvidenceLinkInventory(root, { evidence_id: saved.evidence_id });
   assert.equal(result.ok, true);
-  if (result.ok) assert.deepEqual(result.result.links, [
-    "http://127.0.0.1:5000/guide", "http://127.0.0.1:5000/search",
-  ]);
+  if (result.ok) {
+    assert.deepEqual(result.result.links, [
+      "http://127.0.0.1:5000/guide", "http://127.0.0.1:5000/search",
+    ]);
+    assert.deepEqual(result.result.choices, [
+      { url: "http://127.0.0.1:5000/guide", label: "检索 说明" },
+      { url: "http://127.0.0.1:5000/search", label: "进入 检索" },
+    ]);
+  }
   assert.doesNotMatch(JSON.stringify(result), /private-value|blocked|other\.test/u);
   assert.equal(await readFile(saved.file_path, "utf8"), before);
 });

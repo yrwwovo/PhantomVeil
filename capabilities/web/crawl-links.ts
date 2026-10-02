@@ -5,6 +5,7 @@ export function extractPageLinks(html: string, pageUrl: string, limit = 200) {
   const document = parse(html);
   const stack: DefaultTreeAdapterTypes.Node[] = [document];
   const links: string[] = [];
+  const choices: Array<{ href: string; label: string }> = [];
   let base = pageUrl;
   let baseFound = false;
   let truncated = false;
@@ -18,7 +19,22 @@ export function extractPageLinks(html: string, pageUrl: string, limit = 200) {
       }
       if ((node.tagName === "a" || node.tagName === "area") && href !== undefined &&
           !node.attrs.some(attr => attr.name === "download")) {
-        if (links.length < limit) links.push(href);
+        if (links.length < limit) {
+          links.push(href);
+          const textParts: string[] = [];
+          const textStack: DefaultTreeAdapterTypes.Node[] = [node];
+          while (textStack.length && textParts.join("").length < 160) {
+            const child = textStack.pop()!;
+            if ("tagName" in child && ["script", "style", "template"].includes(child.tagName)) continue;
+            if ("value" in child && typeof child.value === "string") textParts.push(child.value);
+            if ("childNodes" in child) {
+              for (let i = child.childNodes.length - 1; i >= 0; i--) textStack.push(child.childNodes[i]);
+            }
+          }
+          const rawLabel = textParts.join("") || node.attrs.find(attr => attr.name === "aria-label")?.value || "";
+          const label = rawLabel.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 80);
+          choices.push({ href, label });
+        }
         else truncated = true;
       }
     }
@@ -27,5 +43,5 @@ export function extractPageLinks(html: string, pageUrl: string, limit = 200) {
       for (let i = node.childNodes.length - 1; i >= 0; i--) stack.push(node.childNodes[i]);
     }
   }
-  return { base_url: base, links, truncated };
+  return { base_url: base, links, choices, truncated };
 }

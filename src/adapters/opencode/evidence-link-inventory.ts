@@ -47,9 +47,10 @@ export async function runEvidenceLinkInventory(projectRoot: string, input: { evi
   const pageUrl = new URL(observation.request.url);
   const extracted = extractPageLinks(observation.response.body, pageUrl.href, 100);
   const links: string[] = [];
+  const choices: Array<{ url: string; label: string }> = [];
   const seen = new Set<string>();
   let skipped = 0;
-  for (const href of extracted.links) {
+  for (const { href, label } of extracted.choices) {
     try {
       const candidate = new URL(href, extracted.base_url);
       candidate.hash = "";
@@ -60,11 +61,15 @@ export async function runEvidenceLinkInventory(projectRoot: string, input: { evi
       }
       if (seen.has(candidate.href)) continue;
       seen.add(candidate.href);
-      if (links.length < 30) links.push(candidate.href);
+      if (links.length < 30) {
+        links.push(candidate.href);
+        choices.push({ url: candidate.href, label });
+      }
       else skipped++;
     } catch { skipped++; }
   }
   return { ok: true as const, code: "LINK_INVENTORY_COMPLETED",
     reason: "只读列出当前授权范围内的普通链接；尚未访问这些链接",
-    result: { page_url: pageUrl.href, links, skipped, truncated: extracted.truncated || seen.size > 30 } };
+    result: { page_url: pageUrl.href, links, choices, skipped,
+      truncated: extracted.truncated || seen.size > 30 } };
 }
