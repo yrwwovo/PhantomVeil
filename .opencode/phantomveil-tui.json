@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "theme": "phantomveil",
+  "mouse": true,
+  "plugin": [
+    "./tui-plugins/phantomveil-brand.tsx"
+  ]
+}

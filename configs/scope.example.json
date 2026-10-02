@@ -1,0 +1,7 @@
+{
+  "allowed_schemes": ["http", "https"],
+  "allowed_hosts": ["127.0.0.1", "localhost"],
+  "allowed_ports": [8080, 5000],
+  "allowed_paths": ["/"],
+  "denied_paths": ["/admin/delete", "/api/destructive"]
+}

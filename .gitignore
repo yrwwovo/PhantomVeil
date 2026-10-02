@@ -1,0 +1,52 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+**/auth.json
+configs/scope.local.json
+configs/http.local.json
+configs/crawl.local.json
+configs/authorization.local.json
+configs/*.local.json
+configs/.local-backups/
+
+# Security test artifacts
+benchmarks/agent-eval/runs/
+evidence/*
+!evidence/.gitkeep
+reports/*
+!reports/.gitkeep
+/hypotheses/
+*.har
+*.pcap
+*.pcapng
+cookies*.json
+sessions*.json
+
+# Python / Node / Bun
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+node_modules/
+.bun/
+*.tsbuildinfo
+
+# Editors, OS, logs and temporary files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
+.cache/

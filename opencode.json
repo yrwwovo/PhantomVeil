@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "Phant0mV3il",
+  "permission": {
+    "target_setup": "ask",
+    "parameter_reflection_check": "ask",
+    "reflected_xss_assessment": "ask"
+  },
+  "agent": {}
+}

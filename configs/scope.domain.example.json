@@ -1,0 +1,9 @@
+{
+  "allowed_schemes": ["https"],
+  "allowed_hosts": [],
+  "allowed_domains": ["example.test"],
+  "denied_hosts": ["admin.example.test"],
+  "allowed_ports": [443],
+  "allowed_paths": ["/"],
+  "denied_paths": ["/delete"]
+}

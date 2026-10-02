@@ -1,0 +1,32 @@
+{
+  "name": "security-agent-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pveil": "scripts/pveil.ts"
+  },
+  "scripts": {
+    "pveil": "node scripts/pveil.ts",
+    "agent:eval": "node benchmarks/agent-eval/run.mjs",
+    "scan": "node scripts/web-check.ts",
+    "crawl": "node scripts/web-crawl.ts",
+    "reflection:check": "node scripts/parameter-reflection-check.ts",
+    "reflection:analyze": "node scripts/reflection-context.ts",
+    "xss:encoding": "node scripts/xss-encoding-probe.ts",
+    "xss:hypothesis": "node scripts/xss-hypothesis-triage.ts",
+    "evidence:demo": "node scripts/evidence-store-demo.ts",
+    "hypothesis:demo": "node scripts/hypothesis-demo.ts",
+    "hypothesis:store-demo": "node scripts/hypothesis-store-demo.ts",
+    "http:demo": "node scripts/http-get-demo.ts",
+    "report:demo": "node scripts/report-demo.ts",
+    "scope:demo": "node scripts/scope-guard-demo.ts",
+    "test": "node --test tests/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "parse5": "8.0.0"
+  }
+}

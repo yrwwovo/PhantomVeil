@@ -1,0 +1,6 @@
+{
+  "allowed_resolved_ips": ["127.0.0.1", "::1"],
+  "timeout_ms": 3000,
+  "max_response_bytes": 65536,
+  "max_redirects": 3
+}

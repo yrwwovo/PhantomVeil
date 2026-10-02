@@ -1,0 +1,50 @@
+services:
+  gate:
+    image: node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+    working_dir: /app
+    command: ["node", "benchmarks/egress-gate/gate.mjs"]
+    environment:
+      GATE_MAX_REQUESTS: "4"
+    volumes:
+      - ../..:/app:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [front, back]
+
+  fixture:
+    image: node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+    working_dir: /app
+    command: ["node", "benchmarks/egress-gate/fixture.mjs"]
+    volumes:
+      - ../..:/app:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      back:
+        ipv4_address: 172.30.90.10
+
+  probe:
+    image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+    working_dir: /app
+    command: ["python", "benchmarks/egress-gate/probe.py"]
+    volumes:
+      - ../..:/app:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    profiles: [test]
+    networks: [front]
+
+networks:
+  front:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.91.0/24
+  back:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.90.0/24
