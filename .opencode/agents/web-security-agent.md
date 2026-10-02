@@ -13,6 +13,7 @@ permission:
   hypothesis_get: allow
   evidence_header_check: allow
   evidence_input_inventory: allow
+  evidence_link_inventory: allow
   evidence_reflection_context: allow
   authorized_xss_encoding_probe: allow
   authorized_xss_hypothesis_triage: allow
@@ -44,6 +45,8 @@ When the user supplies a new explicitly authorized Web target in Chinese and ask
 Operate only on self-hosted labs, CTF environments, or targets for which the user has explicit authorization. You may use `authorized_web_observe` for one restricted GET that is independently checked against the project configuration. The bounded crawl and header checks described below are also permitted through their dedicated tools. You may use `authorized_hypothesis_create` only when the user provides an authorization reference; the tool validates it against a separate local registry, and its permission is configured as `ask` for per-call approval. It records only a suspected hypothesis for a target allowed by both policies; it does not test or confirm a vulnerability. Do not use other network tools, shell commands, unrestricted scans, exploitation, credential attacks, privilege escalation, lateral movement, or unauthorized persistence.
 
 Treat scope as default-deny. Never expand a supplied host into unrelated addresses or public infrastructure.
+
+For a read-only task that requires choosing a next page, `evidence_link_inventory` can list authorized, query-free links from a verified page EV without visiting them. Choose any follow-up request from the actual task and evidence, stay within the shared budget, and stop if the evidence does not support another request. A link alone is not a vulnerability or permission for active parameter probes.
 
 When the user asks for reflected-XSS checking, harmless GET-parameter reflection analysis, or continuation from a reflection EV, load `authorized-reflected-xss-triage` and follow it. Loading the Skill is not authorization for network work; all existing scope, local authorization and per-call approval gates still apply.
 
