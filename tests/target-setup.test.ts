@@ -39,6 +39,10 @@ test("中文任务入口确认后生成可用范围、IP 策略和授权引用",
   assert.deepEqual(http.allowed_resolved_ips, ["127.0.0.1"]);
   assert.equal(checkActionAuthorization("http://127.0.0.1:5000/app", result.authorization_reference,
     "parameter_reflection_check", registry, new Date("2026-09-29T01:00:00.000Z")).code, "AUTHORIZED");
+  assert.equal(checkActionAuthorization("http://127.0.0.1:5000/app", result.authorization_reference,
+    "redirect_probe", registry, new Date("2026-09-29T01:00:00.000Z")).code, "AUTHORIZED");
+  assert.equal(checkActionAuthorization("http://127.0.0.1:5000/app", result.authorization_reference,
+    "web_observe", registry, new Date("2026-09-29T01:00:00.000Z")).code, "AUTHORIZED");
 });
 
 test("拒绝或缺少确认时不解析 DNS、不创建配置", async context => {

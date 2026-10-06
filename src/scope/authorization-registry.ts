@@ -5,9 +5,9 @@ import {
 } from "./scope-guard.ts";
 
 const REFERENCE_FORMAT = /^[A-Z0-9][A-Z0-9._-]{5,63}$/u;
-export type AuthorizationAction = "hypothesis_create" | "parameter_reflection_check" | "xss_encoding_probe";
+export type AuthorizationAction = "hypothesis_create" | "parameter_reflection_check" | "xss_encoding_probe" | "xss_execution_verify" | "redirect_probe" | "web_observe";
 const ACTIONS = new Set<AuthorizationAction>([
-  "hypothesis_create", "parameter_reflection_check", "xss_encoding_probe",
+  "hypothesis_create", "parameter_reflection_check", "xss_encoding_probe", "xss_execution_verify", "redirect_probe", "web_observe",
 ]);
 
 export interface AuthorizationGrant {
@@ -111,7 +111,8 @@ export function checkActionAuthorization(
   if (!grant.actions.includes(action)) {
     const label = action === "hypothesis_create" ? "创建假设"
       : action === "parameter_reflection_check" ? "执行 GET 参数反射检查"
-        : "执行 XSS 特殊字符编码观察";
+        : action === "xss_encoding_probe" ? "执行 XSS 特殊字符编码观察"
+          : action === "redirect_probe" ? "执行重定向参数观察" : "执行只读页面观察";
     return deny("ACTION_NOT_ALLOWED", `该授权引用不允许${label}`);
   }
   const scoped = checkUrlScope(targetUrl, grant.scope);

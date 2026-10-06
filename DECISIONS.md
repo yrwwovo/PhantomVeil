@@ -1,5 +1,82 @@
 # 关键决策
 
+## 2026-10-05：会话内中文目标绑定
+
+- **复用选择**：新增未绑定 Hermes profile，只开放 `authorized_target_bind`、受限只读观察和离线清点；目标登记复用 `runTargetSetup` 的确认先于 DNS、临时 Scope/HTTP/授权生成与原有请求边界。绑定后的授权在本次隔离目录缩为 `web_observe`，任务仍是单目标、一次请求；不改仓库内本机配置。
+- **入口**：无参 `hermes-chat.ps1` 先进入等待目标的会话，用户直接说「这是已授权目标 URL」后由 MCP 向人类确认并锁定本次目标。前一阶段的配置自动选择改由 `-ConfiguredTarget` 保留；显式 `-Url` 路径不变。现有 Scope 中明确禁止的主机/路径仍拒绝新绑定。普通 `pveil` 默认仍为 OpenCode，等日常 Hermes 入口在真实交互中验证后再考虑切换。
+- **验证边界**：本机定向测试覆盖确认拒绝、输入拒绝、配置显式禁令、绑定前零请求、绑定后一次 GET、第二目标与预算续用拒绝；真实 Hermes CLI 能加载该 profile 并列出绑定工具，旧只读协议夹具未回归失败。未在真实模型交互中验证中文指令的工具选择和 Hermes CLI 的人类确认呈现。
+
+## 2026-10-05：日常 Hermes 无参入口绑定既有只读授权
+
+- **复用选择**：`scripts/hermes-chat.ps1` 无参数时交给现有 Node 启动器离线读取项目本地 Scope、HTTP 策略和授权登记，复用 `checkUrlScope`、`checkActionAuthorization` 与原有隔离任务创建；不复制授权规则或改变 MCP 请求边界。
+- **选择边界**：只有所有当前有效只读授权均指向同一个可精确推导的 URL 时才自动绑定；多目标或宽泛范围在启动前询问精确 URL，再优先选择精确匹配、允许动作较少的引用。无有效 `web_observe` 授权时拒绝启动。无参模式只暴露原有只读任务工具和一次请求预算，不登记新目标；会话内中文登记另列为后续步骤。
+
+## 2026-10-05：完整评估首轮真实配对的评分器修正
+
+- 用户终端的真实 DeepSeek 原样字符轮次中，Hermes 与 OpenCode 都完成四次 GET 后调用已开放的只读 `hypothesis_get`，旧评分器把第二次工具调用一律判错。原始轮次保留 `paired_failed`，不改写历史成绩。
+- 评分器现在只允许规定的完整评估调用后，再可选一次读取该轮 `suspected` HYP；读取编号、返回状态和目标必须匹配，额外联网工具及不相关 HYP 仍拒绝。该修正复用原有本机 HYP 读取能力，不扩大 Agent 网络权限。修复后单项测试、正负两题本机协议夹具双端配对和完整回归均通过；真实双端评分仍待验证。
+
+## 2026-10-05：隔离 Hermes 运行的 DeepSeek 凭据入口
+
+- **复用选择**：完整评估复用现有 `scripts/hermes-pair.ps1` 的隐藏输入与进程环境变量清理模式，新增一次运行正负两个变体的 PowerShell 入口；日常 `hermes-chat.ps1` 在缺少进程 key 时同样隐藏询问。未读取或复制日常 Hermes、OpenCode 的本地凭据文件。
+- **隔离理由**：完整评估给 Hermes 使用全新 `HERMES_HOME`，以免日常记忆、Skill 和提供方配置影响同题比较。OpenCode 的既有凭据由其运行时自行使用；仅 Hermes 参与的 DeepSeek 评估要求本次进程提供 key。脚本只在本次进程中临时设置，结束后清除自己添加的变量；已有变量保持原状。
+
+## 2026-10-05：`pveil` 显式 Hermes 入口与回退
+
+- **复用选择**：`pveil chat --runtime hermes` 仅转交给已测试的 `scripts/hermes-chat.mjs`，不复制 profile、授权、Scope 或 MCP 启动逻辑。`pveil` 和 `pveil chat --runtime opencode` 保持既有 OpenCode TUI 路径。这样可在真实模型完整评估尚未配对验证时使用 Hermes，同时保留确定的回退入口。
+- **边界**：Hermes 模式必须显式给出本次 URL 与授权引用，或用 `--new-target` 只登记只读目标；主动模式仍要求独立动作授权、人类审批和预算。CLI 不接收密钥参数，也不允许单个调用组合多种主动模式。真实 DeepSeek 正负样本双端对照未通过前，不切换无参数默认入口。
+
+## 2026-10-05：Hermes 补齐 HYP 与完整反射型 XSS 工作流
+
+- **复用选择**：把通用 HYP 创建/读取移入共享 `src/workflows`，OpenCode 包装继续转发；`runXssHypothesisTriage` 和 `runAuthorizedReflectedXssAssessment` 只增加 `opencode`/`hermes` 隔离命名空间参数。保留既有确定性证据关联、`suspected` 状态、中文报告和 Scope/授权逻辑，不复制安全核心。
+- **任务边界**：`-Encoding` 对反射与编码分别取得人类批准；仅当本次授权含 `hypothesis_create` 时暴露离线 HYP 关联工具，写入再审批。通用 HYP 创建仅接受本次精确 URL，并逐次批准。`-Assessment` 在启动前要求 `web_observe`、`parameter_reflection_check`、`xss_encoding_probe`、`hypothesis_create`，只暴露一次完整评估和本次 HYP 读取；整项任务一次批准，最多 20 次 GET，每个请求仍按标记类别逐次核对任务路径、动作授权和预算。`-NewTarget` 仍只生成只读授权。
+- **验证界限**：本机受控测试覆盖审批拒绝零请求、同源路径/动作/预算门禁、可信 EV 配对、suspected HYP 与无漏洞确认。新增完整评估的 Agent 外评分器，从靶站实际请求复核 EV、审计、HYP、报告与结论；已测试伪 EV、少请求、缺批准和伪确认的拒绝。该评分器目前只覆盖单参数原样字符正样本与编码负样本。既有 DeepSeek 配对成绩只证明只读观察。OpenCode 保留作回退与同条件对照。
+- **完整评估对照接线**：仓库外本机夹具运行器现在可依次启动 Hermes 与 OpenCode，并在两端使用同一任务原文、同一受限 MCP 工具、同一模型名、四次 GET 预算和上述 Agent 外评分器。OpenCode 的本机协议夹具按[官方自定义提供方文档](https://opencode.ai/docs/providers)使用 OpenAI 兼容接法。固定 `127.0.0.1` 任务的预批准只存在评测专用 MCP 启动器；产品 MCP 服务仍要求人类批准。两端确定性协议夹具在原样字符正样本和编码负样本各通过一次配对，每端每轮实际四次 GET；真实 DeepSeek 双端运行尚需在持有密钥的进程中执行，不能算作已有成绩。
+
+## 2026-10-04：Hermes 只读能力按现有函数增量迁移
+
+- **复用选择**：先复用现有 `checkHttpSecurityHeaders`、`generateHeaderCheckReport` 与 Hermes 任务服务已校验的 EV 读取，不复制 OpenCode 的工具包装代码。`evidence_header_check` 完全离线；`authorized_web_check` 只经既有 `authorized_web_observe` 发送一次 GET，再从同一 EV 生成响应头中文报告。
+- **接线约束**：新增工具仍只能访问本次隔离任务的 EV、精确 URL 和共享请求预算；任何失败不借其他工具自动重试。旧两工具评测配置保持不变，以免改变已记录的同题对照。交互 profile 单独列出新增白名单。
+- **有界爬取**：复用 `runWebCrawl` 的同源静态链接、逐跳 Scope/IP 检查、间隔和汇总报告，仅参数化证据命名空间。交互入口必须显式指定爬取模式；该模式把任务允许范围限制为起始 URL 的同源路径分支，并给共享预算最多 10 次请求。普通观察工具仍只接受起始精确 URL，不能借爬取模式手动扩大调用。任务外链接与被禁止路径在发送前拒绝。
+- **新目标登记**：`--new-target` 复用现有 `runTargetSetup`，先在调用者终端展示目标和精确路径并取得任务级确认，再解析 DNS、在仓库外临时目录生成 Scope/HTTP/授权配置并复制到本次隔离任务。拒绝确认则不解析 DNS、不启动模型；不修改源码仓库的本机授权配置。此入口只创建只读任务，不把登记视为主动检查审批。
+- **主动工具审批接法**：固定版本 Hermes 的 MCP 客户端支持 form-mode elicitation，并把它交给 CLI/TUI 的人类确认界面；缺失、取消或超时均拒绝。首个主动切片仅迁移已实现的无害 GET 参数反射检查：从本任务已校验 EV 推导表单与参数，先审查动作授权和任务路径，再向用户展示具体目标/参数请求一次批准；MCP 服务在实际请求边界再次核对动作授权与共享预算。普通任务不暴露该工具，未见到批准不得请求。
+- **编码观察延续**：`--encoding` 只在同一任务的可信页面 EV 上顺序运行无害反射与一次非执行字符编码观察；两个动作各自需要独立授权和逐次人类批准，共享最多三次请求预算。离线反射位置分析复用现有函数；原始字符或敏感上下文只标记待复核，不创建或确认 XSS。
+
+## 2026-10-04：Hermes 交互式只读任务入口
+
+- **复用选择**：继续使用已验证的 Hermes v0.21.2 `chat` 交互 CLI、现有 `learning-off.yaml`、两项本地 MCP 工具、`HermesTaskService`、授权登记、Scope Guard、逐跳请求预算和 EV/中文报告；不引入新的 Agent 框架或网络工具。上游 CLI 的 `--query-file` 可在真实终端预置首轮任务文字，`--toolsets` 与隔离 `HERMES_HOME` 选取本次受限配置。
+- **Agent 身份补齐**：固定版本 Hermes 从 `agent.system_prompt` 加载人工定义的行为约束，从 `branding.agent_name` 显示 Agent 名。交互入口因此使用一个只描述当前两项已验证能力的 `Phant0mV3il` Hermes 提示词；原 OpenCode Agent 的目标登记、爬取、XSS、HYP 等指令不能原样搬入，因为这些工具尚未迁移。品牌名称不代替 MCP 白名单、授权或评分。
+- **任务边界**：入口要求调用者给出精确 URL 和已有的 `web_observe` 授权引用。启动前离线验证本地 Scope、HTTP 策略和授权；每次创建仓库外独立任务目录、只含所选授权的副本、精确 URL 清单和最多一次请求预算。会话可继续对话，但不能借同一会话扩大目标或刷新预算；新目标需要新任务及其授权。MCP 服务在每次实际请求前仍重新校验。启动器不显示或写入模型密钥，不读取历史 EV。
+- **登记衔接**：后续由目标登记新建的授权引用包含 `web_observe`；既有本地授权文件不被迁移器修改。旧引用若缺少该动作，入口明确拒绝，须经新的目标登记或由用户自行审核本地授权后再启动。
+- **限制**：交互会话不是已知答案评测，不能从模型回答推断漏洞或评分通过；此入口仅开放只读观察及离线入口清点。原 OpenCode 路径与配对评测均保留。
+
+## 2026-10-04：同一目标的 Hermes/OpenCode 配对评测
+
+- **复用选择**：沿用 `benchmarks/hermes-eval/run.mjs` 已有的本机靶站、两项 stdio MCP 工具、逐任务新授权、预算与独立评分；只增加固定端口参数和薄配对启动器，不再造一套请求或证据实现。官方 [Hermes 提供方说明](https://hermes-agent.nousresearch.com/docs/integrations/providers)要求 DeepSeek 使用 `DEEPSEEK_API_KEY`；当前隔离 profile 每轮重建，因此模型凭据只从启动进程继承，项目不读取 OpenCode 的本机授权配置，也不把密钥写入运行结果。
+- **配对有效性**：两端顺序运行，复用同一个本机 URL、任务原文、工具清单、每次一次请求预算、四步 Agent 上限、150 秒墙钟上限、源码和评分器版本；各自创建新的授权登记、EV 与运行目录。配对结果单独标出环境失败、任务失败和不可比较；仅两端都真实运行并通过独立评分时称为一次有效配对。Token 目前仅记录而未设置跨运行底座硬上限；模型 ID 相同不自动证明后端权重版本完全一致，这些限制均单独记录。
+- **边界**：保留 OpenCode 回退，不扩充网络工具；此次仍只测观察和离线清点。Grow、主动探测、`pveil` 与 TUI 不并入这一步。
+- **Windows 启动路径**：普通 PowerShell 与 Codex 应用对 `%LOCALAPPDATA%` 下的隔离安装可能看到不同目录；其 `uv` 启动器在普通终端也可能无法规范化原脚本路径。官方 CLI 启动器在新建隔离数据目录内准备依赖时因路径错误退出。因此把固定标签 `v2026.9.11` 的 Hermes 源码和 `mcp` extra 依赖安装到与项目同级、仓库外的 `D:\Projects\.phantomveil-hermes-runtime`，不复制已有 `.venv`、授权或证据。配对入口按显式 `HERMES_BIN`、共享安装、旧隔离安装、官方 CLI 的顺序选取程序并记录来源；失效的显式路径不会阻止后备安装。子进程结果按严格校验的运行编号从父进程评测根目录定位，再核对目录/文件类型与运行身份，避免把应用目录映射差异误判为越界路径。
+
+## 2026-10-02：Hermes 单 Agent 只读迁移切片
+
+- **2026-10-03 对照接线补充**：OpenCode 的[本地 MCP 配置](https://opencode.ai/docs/en/mcp-servers/)和[按工具名授权规则](https://opencode.ai/docs/agents/)允许在仓库外的独立工作目录中复用同一个 PhantomVeil stdio MCP 服务。对照入口因此不再用旧的 OpenCode 专有工具组合，而是固定两项相同 MCP 工具、同一任务原文、一次请求预算和同一独立评分器。OpenCode v1.18.29 的本机 MCP 连接检查通过；真实同模型对照仍未运行，不能据此宣称迁移效果。
+
+- **复用选择**：使用 NousResearch [Hermes Agent v0.21.2（v2026.9.11）](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.11) 的 Windows 原生 CLI、stdio MCP 和单次会话；上游 [MIT 许可](https://github.com/NousResearch/hermes-agent/blob/v2026.9.11/LICENSE)。[官方 Windows 指南](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native)支持 Windows 10/11 原生运行；[MCP 配置参考](https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference)支持逐服务工具白名单。Hermes 源码及运行环境安装在源码仓库外，不复制进 PhantomVeil，也不替换现有 OpenCode 路径。Node MCP 服务采用官方 TypeScript SDK `@modelcontextprotocol/server@2.2.0`，只复用受限 GET、Scope Guard、授权登记、请求预算、EV、报告和离线清点函数。
+- **接线边界**：每个评测任务生成新的短时 `web_observe` 授权及精确 URL 清单，MCP 的 `authorized_web_observe` 在请求前及每个重定向跳转前核对授权，然后预留共享请求预算；`evidence_entry_inventory`只读取本任务已校验 EV。Hermes 隔离 profile 只允许这两个 MCP 工具；禁用终端、文件、浏览器、通用 Web、代码执行、委派及其他内建工具。禁用默认的 MCP `tool_search` 桥接，使两项白名单工具直接暴露并可审计。Agent 不能传入工作区、授权文件、预算根目录或评分真值。
+- **评分与回退**：保留 OpenCode 工具和运行器；Hermes 使用会话导出转换到现有 `AgentRunEvents`，Agent 外评分继续核对靶站实际请求、EV 哈希、报告事实、最终回答，并新增离线清点一致性检查。运行目录位于源码仓库外，原始事件、证据和报告不进入 Git。此次只读链成功不代表漏洞发现。
+- **版本差异与实测限制**：官方当前 CLI 文档有 `--format stream-json`，但固定的 v0.21.2 CLI 尚无该参数；本切片使用该版本自带的 `hermes sessions export`。Hermes 的匿名 OpenCode Free 路由在独立客户端返回 403，OpenRouter 运行环境未提供密钥；这些模型失败保留为环境记录。仓库提供确定性本机模型协议夹具以检验真正的 Hermes 运行循环与 MCP 接线，夹具成绩不计作真实模型对照。Grow 只准备独立的关闭/开启模板，开启组所有记忆和 Skill 写入均须先审查；正式第二轮使用未见过的同类任务。
+
+## 2026-10-02：用真实模型对照首个非 XSS 安全任务
+
+- **评测方式**：本机临时靶站提供两次不同标记控制跳转的正样本，以及站内跳转、正文回显、固定站外跳转三个负样本。Agent 与简单固定规则各用一次页面 GET 加最多两次标记 GET；独立评分器核对实际请求、`Location`、EV、报告和最终结论。用户在本次聊天明确批准本机评测，因此只在仓库外隔离副本预批准 `redirect_probe`；项目源码仍要求人工审批，运行器不使用 `--auto`。
+- **结果与决策**：四种场景各一次，修正回答格式评分器并用保留原始记录重评分后，Agent 4/4、固定规则 4/4；两者都未确认漏洞或访问跳转目的地。固定规则成本显著更低，暂未显示 Agent 的效果优势。评分器原始失败和修正规则均留痕；不能把四次运行当作稳定成功率或零误报证据。继续扩充变化场景与负例重复，固定评分器版本后再评价模型价值。
+
+## 2026-10-02：首个非 XSS 安全任务选择服务端开放重定向观察
+
+- **任务**：在明确授权的本机 Web 靶场上，从已验证 HTML 的同源 GET 表单选定一个跳转参数，发送两次各带不同唯一标记的 GET；只观察首个 3xx 响应的 `Location`，不访问跳转目的地。以实际请求、EV 与独立本地真值区分外站跳转、站内跳转、仅回显和拒绝；输出待复核观察，不自动确认漏洞。
+- **复用研究**：[OWASP 开放重定向说明](https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html) 与 [CWE-601](https://cwe.mitre.org/data/definitions/601.html) 定义输入控制外部跳转；[ZAP 被动规则](https://www.zaproxy.org/docs/desktop/addons/passive-scan-rules/)比较用户输入与站外 `Location`，[ZAP 主动规则](https://www.zaproxy.org/docs/desktop/addons/active-scan-rules/)会提交多种跳转值；[Nuclei 通用模板](https://github.com/projectdiscovery/nuclei-templates/blob/main/http/vulnerabilities/generic/open-redirect-generic.yaml)元数据给出最多 93 次请求。当前阶段只复用规则思路和项目已有 `restrictedHttpGet`、Scope Guard、授权登记、EV 与表单清点，不复制外部源码或运行完整扫描器；现成扫描器的出站请求尚不能逐次交给本项目门禁验证。
+- **实现边界**：新增独立的 `redirect_probe` 授权动作和审批；请求从可信表单得到 endpoint 与参数，当前仅允许本机靶场地址。目的地址固定为项目生成的 `.invalid` 唯一标记，客户端观察首个响应即停止，不解析目的地 DNS。若缺少有效授权、审批、预算或 EV，则停止。只在两次 `Location` 分别与对应标记完全匹配且跨源时给出待复核候选；不把状态码、任意外链、正文回显或一次命中直接写成“已确认”。
+
 ## 2026-10-02：用相同首页测试目标驱动选路
 
 - **复用选择**：沿用现有本地评测运行器、OpenCode 工具、EV、Scope Guard 和独立决策评分；只增加两个共享同一首页的已知答案题，不增加网络工具或主动探测。固定对照同样读取任务目标和链接标签，先按目标中“按……检索/筛选”的短语匹配页面主用途，再沿用现有通用规则。

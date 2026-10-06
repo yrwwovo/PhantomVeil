@@ -80,6 +80,65 @@ test("pveil 无参数时以受限 Agent 启动 OpenCode TUI", async () => {
   assert.equal(invocation?.args.includes("--auto"), false);
 });
 
+test("pveil 显式 Hermes 任务只转交隔离启动器，不调用 OpenCode", async () => {
+  const stdout = writer();
+  const stderr = writer();
+  let hermes: { script: string; args: string[]; cwd: string } | undefined;
+  let openCodeCalled = false;
+  const status = await runPveil("D:/example/project", ["chat", "--runtime", "hermes",
+    "--url", "http://127.0.0.1:5000/", "--authorization-reference", "LAB-REF",
+    "--assessment"], {
+    stdout: stdout.stream, stderr: stderr.stream,
+    env: { DEEPSEEK_API_KEY: "fixture-only" },
+    locateOpenCode: () => { openCodeCalled = true; return "C:/tools/opencode.exe"; },
+    launchOpenCode: () => { openCodeCalled = true; return { status: 0 }; },
+    launchHermesTask: (script, args, options) => {
+      hermes = { script, args, cwd: options.cwd };
+      return { status: 0 };
+    },
+  });
+  assert.equal(status, 0);
+  assert.equal(openCodeCalled, false);
+  assert.equal(stderr.read(), "");
+  assert.equal(hermes?.script, "D:\\example\\project\\scripts\\hermes-chat.mjs");
+  assert.deepEqual(hermes?.args, ["--url", "http://127.0.0.1:5000/",
+    "--authorization-reference", "LAB-REF", "--assessment"]);
+  assert.equal(hermes?.cwd, "D:\\example\\project");
+});
+
+test("Hermes 入口在密钥缺失、无效目标或只读新目标叠加主动模式时拒绝", async () => {
+  const stderr = writer();
+  let launched = false;
+  const common = { stdout: writer().stream, stderr: stderr.stream,
+    launchHermesTask: () => { launched = true; return { status: 0 }; } };
+  assert.equal(await runPveil(".", ["chat", "--runtime", "hermes",
+    "--url", "http://127.0.0.1:5000/", "--authorization-reference", "LAB-REF"],
+  { ...common, env: {} }), 2);
+  assert.match(stderr.read(), /DEEPSEEK_API_KEY/u);
+  assert.equal(await runPveil(".", ["chat", "--runtime", "hermes",
+    "--url", "https://example.test/#fragment", "--authorization-reference", "LAB-REF"],
+  { ...common, env: { DEEPSEEK_API_KEY: "fixture-only" } }), 2);
+  assert.equal(await runPveil(".", ["chat", "--runtime", "hermes",
+    "--url", "http://127.0.0.1:5000/", "--new-target", "--assessment"],
+  { ...common, env: { DEEPSEEK_API_KEY: "fixture-only" } }), 2);
+  assert.equal(launched, false);
+});
+
+test("pveil 显式 OpenCode 回退保持原受限 TUI 配置", async () => {
+  let args: string[] = [];
+  const status = await runPveil("D:/example/project", ["chat", "--runtime", "opencode"], {
+    stdout: writer().stream, stderr: writer().stream,
+    locateOpenCode: () => "C:/tools/opencode.exe",
+    launchOpenCode: (_command, received, options) => {
+      args = received;
+      assert.match(options.env.OPENCODE_TUI_CONFIG ?? "", /phantomveil-tui\.json$/u);
+      return { status: 0 };
+    },
+  });
+  assert.equal(status, 0);
+  assert.deepEqual(args, ["D:\\example\\project", "--agent", PHANTOMVEIL_AGENT]);
+});
+
 test("缺少 OpenCode CLI 时明确拒绝，不尝试替代网络或 Shell 能力", async () => {
   const stderr = writer();
   let launched = false;

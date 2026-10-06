@@ -108,6 +108,40 @@ npm run scan -- http://127.0.0.1:5000/
 
 用 OpenCode 打开本目录，选择或提及 `web-security-agent`。该 Agent 可调用 `authorized_web_observe` 完成一次受限 GET、证据保存和中文观察报告；`authorized_hypothesis_create` 只有在工具内核对独立的本地授权登记后，才能为匹配范围的 URL 离线创建 `suspected` 假设。该工具已配置为逐次询问批准（`ask`），但仍待在实际 OpenCode 会话中验证。Shell、文件读取/搜索、编辑及其他网络能力保持禁用。
 
+### Hermes 交互式受限任务入口
+
+也可从项目统一命令显式选择运行底层；当前无参数 `pveil` 仍启动 OpenCode。日常 Hermes 入口验证稳定后，再把统一命令的默认运行时切到 Hermes：
+
+```powershell
+npm run pveil -- chat --runtime hermes --url 'http://127.0.0.1:5000/' --authorization-reference 'TASK-你的授权引用'
+npm run pveil -- chat --runtime opencode
+```
+
+Hermes 的扩展任务在上述命令末尾添加 `--crawl`、`--reflection`、`--redirect`、`--encoding` 或 `--assessment`，每次只能选择一种。新目标的只读登记使用 `--new-target` 代替授权引用；该选项不能与扩展模式组合。`pveil` 只转交到既有隔离启动器，不改变任务授权和实际请求门禁。
+
+日常启动可在项目目录直接运行，不必传 `-Url` 或授权引用：
+
+```powershell
+.\scripts\hermes-chat.ps1
+```
+
+这会打开尚未绑定目标的 `Phant0mV3il` 受限会话。进入 Hermes 后直接说「这是已授权目标 http://你的目标/」；PhantomVeil 会显示精确目标和路径，请你确认授权。确认前不解析 DNS 或发送 HTTP；确认后只在本次隔离任务登记该目标，允许一次只读观察和离线入口清点。项目现有配置中的明确禁止主机和路径仍会拒绝绑定；项目配置文件不会被改写。会话不能切换到第二个目标。
+
+如需沿用上一阶段“从本地配置自动选择唯一目标并立即观察”的方式，运行 `.\scripts\hermes-chat.ps1 -ConfiguredTarget`；它会读取 `scope.local.json`、`http.local.json` 和 `authorization.local.json`，多目标时仍在启动前询问精确 URL。也可以显式指定已授权目标：
+
+```powershell
+.\scripts\hermes-chat.ps1 -Url 'http://127.0.0.1:5000/' -AuthorizationReference 'TASK-你的授权引用'
+```
+
+它启动名为 `Phant0mV3il` 的隔离 Hermes 交互会话；只读任务执行“授权页面观察 → EV → 离线入口清点 → 中文结论”。普通任务只允许该精确 URL 的一次 HTTP 请求；继续聊天不会重置预算，也不能切换目标。新目标需另起会话和授权。任务目录在仓库外的 `%LOCALAPPDATA%\PhantomVeil\hermes-chat-runs\`。普通 `hermes` 的 `/agent` 不能加载这套授权与门禁。OpenCode 仍保留供回退。
+
+首次使用新授权目标可运行 `./scripts/hermes-chat.ps1 -Url 'http://127.0.0.1:5000/' -NewTarget`。终端会展示待登记的精确主机和路径，并在 DNS 解析及模型启动前要求确认；生成的配置只在本次仓库外任务目录使用，不覆盖项目现有本地配置。显式要求静态同源爬取时添加 `-Crawl`，整次任务最多 10 次请求；普通单页模式仍只有一次。爬取不执行脚本或提交表单，链接和表单清单不构成漏洞发现。
+
+一次无害 GET 参数反射观察使用 `-Reflection`，要求 `parameter_reflection_check` 动作授权，最多两次请求。本机服务端跳转观察使用 `-Redirect`，要求 `redirect_probe`，最多三次请求且不访问目的地。反射加非执行字符编码观察使用 `-Encoding`，同时要求 `parameter_reflection_check`、`xss_encoding_probe`，最多三次请求；如果本次引用还允许 `hypothesis_create`，可对两份可信 EV 经单独批准创建 suspected HYP。完整低影响反射型 XSS 初步评估使用 `-Assessment`，要求以上三个动作，任务级批准后在起点的同源路径分支内逐请求检查，最多二十次 GET，只创建 suspected HYP。各主动模式互斥；没有审批界面或用户拒绝时，主动请求不会发送。以上均不执行脚本或确认漏洞。`-NewTarget` 只生成只读授权，不能自动用于这些主动模式。
+
+同题完整评估的本机已知答案对照入口与当前验证范围见 [评测说明](benchmarks/hermes-assessment-eval/README.md)。它使用单独的本机四请求夹具，不借用历史任务授权；真实 DeepSeek 双端成绩尚未运行。
+逐项工具接线与仍缺的验证见 [Hermes 能力对照](docs/hermes-parity.md)。
+
 本仓库不包含 OpenCode 源码，只使用其公开项目配置和扩展入口。
 
 当前开发环境已安装 OpenCode 1.18.29，并完成了真实模型驱动的本地观察任务复演。操作步骤与验证基线见 `docs/opencode-integration.md`。

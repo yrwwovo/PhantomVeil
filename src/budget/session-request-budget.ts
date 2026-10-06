@@ -134,6 +134,30 @@ export function sessionRequestControl(
   } };
 }
 
+/** Called only after a new in-session human approval. Never resets consumed attempts. */
+export async function approveSessionRequestBudget(projectRoot: string, sessionId: string,
+  stateRoot: string, maxRequests = 20): Promise<boolean> {
+  if (!sessionId || !Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 20) return false;
+  const file = statePath(projectRoot, sessionId, stateRoot);
+  const lockFile = `${file}.lock`;
+  let lock;
+  try {
+    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    lock = await open(lockFile, "wx", 0o600);
+    let state: BudgetState = { schema_version: 1, max_requests: maxRequests, used_requests: 0, attempts: [] };
+    try {
+      const stored = JSON.parse(await readFile(file, "utf8"));
+      if (!validState(stored) || stored.used_requests > maxRequests) return false;
+      state = { ...stored, max_requests: maxRequests };
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    await writeFile(path.join(projectRoot, "configs", "request-budget.local.json"),
+      JSON.stringify({ max_requests: maxRequests }), { mode: 0o600 });
+    await saveState(file, state);
+    return true;
+  } catch { return false; }
+  finally { if (lock) { await lock.close(); await rm(lockFile, { force: true }); } }
+}
+
 export async function readSessionRequestBudget(
   projectRoot: string,
   sessionId: string,

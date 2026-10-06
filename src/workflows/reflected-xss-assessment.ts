@@ -5,10 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { HttpRequestControl } from "../../capabilities/web/restricted-http-get.ts";
 import { TASK_BUDGET_EXHAUSTED, TASK_BUDGET_UNAVAILABLE } from "../budget/session-request-budget.ts";
 
-import { runAuthorizedParameterReflectionCheck } from "../adapters/opencode/authorized-parameter-reflection-check.ts";
-import { runAuthorizedXssEncodingProbe } from "../adapters/opencode/authorized-xss-encoding-probe.ts";
-import { runEvidenceInputInventory } from "../adapters/opencode/evidence-input-inventory.ts";
-import { runEvidenceReflectionContext } from "../adapters/opencode/evidence-reflection-context.ts";
+import { runAuthorizedParameterReflectionCheck } from "./parameter-reflection-check.ts";
+import { runAuthorizedXssEncodingProbe } from "./xss-encoding-probe.ts";
+import { runEvidenceInputInventory } from "./evidence-input-inventory.ts";
+import { runEvidenceReflectionContext } from "./evidence-reflection-context.ts";
 import { checkActionAuthorization, type AuthorizationRegistry } from "../scope/authorization-registry.ts";
 import { checkUrlScope, type ScopeConfig } from "../scope/scope-guard.ts";
 import { runWebCrawl } from "./web-crawl.ts";
@@ -28,6 +28,7 @@ export interface ReflectedXssAssessmentInput {
 }
 
 export interface ReflectedXssAssessmentDependencies {
+  artifactNamespace?: "opencode" | "hermes";
   approve?: (details: {
     target: string;
     max_parameters: number;
@@ -97,10 +98,11 @@ async function saveAssessmentReport(
   discovered: number,
   skippedHighImpact: number,
   items: AssessmentItem[],
+  artifactNamespace: "opencode" | "hermes",
 ) {
   const generatedAt = new Date().toISOString();
   const reportId = `AXSS-${generatedAt.replace(/[-:.TZ]/gu, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
-  const filePath = path.join(root, "reports", "opencode", `${reportId}.md`);
+  const filePath = path.join(root, "reports", artifactNamespace, `${reportId}.md`);
   const reflected = items.filter(item => item.reflection === "reflected").length;
   const sensitive = items.filter(item => item.context === "sensitive_context_observed").length;
   const encodingChecks = items.filter(item => item.encoding_evidence_id).length;
@@ -152,6 +154,7 @@ export async function runAuthorizedReflectedXssAssessment(
   }
 
   const root = path.resolve(projectRoot);
+  const artifactNamespace = dependencies.artifactNamespace ?? "opencode";
   let scope: ScopeConfig;
   let registry: AuthorizationRegistry;
   let policy: ReflectedXssAssessmentPolicy = { ...DEFAULT_REFLECTED_XSS_ASSESSMENT_POLICY };
@@ -201,7 +204,8 @@ export async function runAuthorizedReflectedXssAssessment(
       reason: "用户未批准本次主动评估；未执行网络请求" };
   }
 
-  const crawl = await runWebCrawl(root, scoped.target.url, dependencies.request_control);
+  const crawl = await runWebCrawl(root, scoped.target.url, dependencies.request_control,
+    artifactNamespace);
   if (!("pages" in crawl)) {
     return { ok: false as const, code: "CRAWL_FAILED", reason: crawl.reason };
   }
@@ -215,7 +219,8 @@ export async function runAuthorizedReflectedXssAssessment(
   let skippedHighImpact = 0;
   for (const page of crawl.pages) {
     if (!page.evidence_id) continue;
-    const inventory = await runEvidenceInputInventory(root, { evidence_id: page.evidence_id });
+    const inventory = await runEvidenceInputInventory(root, { evidence_id: page.evidence_id },
+      artifactNamespace);
     if (!inventory.ok) continue;
     for (const form of inventory.result.forms) {
       if (form.method !== "get" || !form.action || !form.action_valid || form.same_origin !== true ||
@@ -248,7 +253,7 @@ export async function runAuthorizedReflectedXssAssessment(
       form_index: candidate.form_index,
       parameter_name: candidate.parameter_name,
       authorization_reference: input.authorization_reference,
-    }, dependencies.request_control);
+    }, dependencies.request_control, artifactNamespace);
     if (!reflection.ok) {
       items.push({ ...candidate, reflection: "failed", code: reflection.code, reason: reflection.reason });
       if (FATAL_CODES.has(reflection.code)) {
@@ -263,13 +268,14 @@ export async function runAuthorizedReflectedXssAssessment(
       reflection: reflection.result.outcome, code: reflection.code, reason: reflection.reason,
     };
     if (reflection.result.outcome === "reflected") {
-      const context = await runEvidenceReflectionContext(root, { evidence_id: reflection.trace.evidence_id });
+      const context = await runEvidenceReflectionContext(root,
+        { evidence_id: reflection.trace.evidence_id }, artifactNamespace);
       item.context = context.ok ? context.result.outcome : `context_${context.code.toLowerCase()}`;
       await wait(policy.delay_ms);
       const encoding = await runAuthorizedXssEncodingProbe(root, {
         evidence_id: reflection.trace.evidence_id,
         authorization_reference: input.authorization_reference,
-      }, dependencies.request_control);
+      }, dependencies.request_control, artifactNamespace);
       if (!encoding.ok) {
         item.encoding_outcome = `failed_${encoding.code.toLowerCase()}`;
         item.code = encoding.code;
@@ -289,6 +295,7 @@ export async function runAuthorizedReflectedXssAssessment(
         encoding_evidence_id: encoding.trace.evidence_id,
         authorization_reference: input.authorization_reference,
       }, {
+        artifactNamespace,
         // 整项任务已在任何网络请求前获得一次明确批准，不再逐参数重复询问。
         approve: async () => {},
       });
@@ -308,6 +315,7 @@ export async function runAuthorizedReflectedXssAssessment(
 
   const report = await saveAssessmentReport(
     root, scoped.target.url, policy, candidates.length, skippedHighImpact, items,
+    artifactNamespace,
   );
   if (!report.ok) {
     return { ok: false as const, code: "REPORT_ERROR", reason: report.reason,

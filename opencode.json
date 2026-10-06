@@ -4,6 +4,7 @@
   "permission": {
     "target_setup": "ask",
     "parameter_reflection_check": "ask",
+    "redirect_probe": "ask",
     "reflected_xss_assessment": "ask"
   },
   "agent": {}

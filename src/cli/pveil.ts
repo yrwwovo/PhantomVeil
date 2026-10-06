@@ -25,6 +25,11 @@ export interface PveilDependencies {
     args: string[],
     options: { cwd: string; env: NodeJS.ProcessEnv },
   ) => LaunchResult;
+  launchHermesTask?: (
+    script: string,
+    args: string[],
+    options: { cwd: string; env: NodeJS.ProcessEnv },
+  ) => LaunchResult;
   runCheck?: typeof runWebCheck;
   runCrawl?: typeof runWebCrawl;
 }
@@ -42,6 +47,12 @@ const HELP = `${PHANTOMVEIL_TITLE} - 授权 Web 安全 Agent
 用法：
   pveil                  进入 OpenCode 终端对话界面
   pveil chat             进入 OpenCode 终端对话界面
+  pveil chat --runtime opencode
+                         显式进入 OpenCode（回退入口）
+  pveil chat --runtime hermes --url <URL> --authorization-reference <REF> [--crawl|--reflection|--redirect|--encoding|--assessment]
+                         进入本次授权的 Hermes PhantomVeil 任务
+  pveil chat --runtime hermes --url <URL> --new-target
+                         登记一个只读目标并进入 Hermes
   pveil check <URL>      执行一次受限单页检查（无需 LLM）
   pveil crawl <URL>      执行受限同源爬取（无需 LLM）
   pveil --help           显示帮助
@@ -102,6 +113,41 @@ export function launchOpenCode(
   return { status: result.status, error: result.error };
 }
 
+/** Hermes task launcher owns the isolated profile and all task-level checks. */
+export function launchHermesTask(
+  script: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): LaunchResult {
+  const result = spawnSync(process.execPath, [script, ...args], {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+  return { status: result.status, error: result.error };
+}
+
+function parseHermesChatArgs(args: string[]): string[] | undefined {
+  if (args.length < 3 || args[0] !== "--url") return undefined;
+  const url = args[1];
+  let target: URL;
+  try { target = new URL(url); } catch { return undefined; }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password ||
+      target.hash || target.href !== url) return undefined;
+  const newTarget = args[2] === "--new-target";
+  const expected = newTarget ? 3 : 4;
+  if (!newTarget && (args[2] !== "--authorization-reference" || !args[3]?.trim())) return undefined;
+  if (![expected, expected + 1].includes(args.length)) return undefined;
+  const mode = args[expected];
+  if (mode && !["--crawl", "--reflection", "--redirect", "--encoding", "--assessment"].includes(mode)) {
+    return undefined;
+  }
+  if (newTarget && mode) return undefined;
+  if ((mode || newTarget) && target.search) return undefined;
+  return args;
+}
+
 async function runDeterministicCommand(
   command: "check" | "crawl",
   args: string[],
@@ -136,6 +182,7 @@ export async function runPveil(
   const stderr = dependencies.stderr ?? process.stderr;
   const locate = dependencies.locateOpenCode ?? locateOpenCode;
   const launch = dependencies.launchOpenCode ?? launchOpenCode;
+  const launchHermes = dependencies.launchHermesTask ?? launchHermesTask;
   const runCheck = dependencies.runCheck ?? runWebCheck;
   const runCrawl = dependencies.runCrawl ?? runWebCrawl;
 
@@ -146,7 +193,28 @@ export async function runPveil(
   if (args[0] === "check" || args[0] === "crawl") {
     return runDeterministicCommand(args[0], args.slice(1), root, { stdout, stderr, runCheck, runCrawl });
   }
-  if (args.length > 0 && !(args.length === 1 && args[0] === "chat")) {
+  if (args[0] === "chat" && args[1] === "--runtime" && args[2] === "hermes") {
+    const taskArgs = parseHermesChatArgs(args.slice(3));
+    if (!taskArgs) {
+      writeLine(stderr, "Hermes 任务参数无效。使用 pveil --help 查看用法；新目标只能登记只读任务。");
+      return 2;
+    }
+    if (!env.DEEPSEEK_API_KEY?.trim()) {
+      writeLine(stderr, "当前终端缺少 DEEPSEEK_API_KEY；请仅在本机进程环境中设置，不要作为命令参数传入。");
+      return 2;
+    }
+    const script = path.join(root, "scripts", "hermes-chat.mjs");
+    const result = launchHermes(script, taskArgs, { cwd: root, env });
+    if (result.error) {
+      writeLine(stderr, `Hermes 任务启动失败：${result.error.message}`);
+      return 2;
+    }
+    return result.status ?? 2;
+  }
+  const openCodeChat = args.length === 0 ||
+    (args.length === 1 && args[0] === "chat") ||
+    (args.length === 3 && args[0] === "chat" && args[1] === "--runtime" && args[2] === "opencode");
+  if (!openCodeChat) {
     writeLine(stderr, `未知参数：${args.join(" ")}。使用 pveil --help 查看可用命令。`);
     return 2;
   }

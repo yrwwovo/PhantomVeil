@@ -63,3 +63,23 @@ export function normalizeOpenCodeEvents(events: unknown[]): AgentRunEvents {
     token_usage: sawTokens ? { input, output } : null,
   };
 }
+
+/** Normalize the isolated MCP parity profile to the same facts as Hermes. */
+export function normalizeOpenCodeMcpEvents(events: unknown[]): AgentRunEvents {
+  const run = normalizeOpenCodeEvents(events);
+  const unwrap = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      try { return unwrap(JSON.parse(value)); } catch { return value; }
+    }
+    const outer = record(value);
+    if (outer && Array.isArray(outer.content)) {
+      const item = outer.content.find(part => record(part)?.type === "text");
+      return unwrap(record(item)?.text);
+    }
+    return outer && typeof outer.result === "string" ? unwrap(outer.result) : value;
+  };
+  return { ...run, tools: run.tools.map(tool => ({ ...tool,
+    name: tool.name.replace(/^phantomveil-hermes_/u, ""),
+    output: unwrap(tool.output),
+  })) };
+}

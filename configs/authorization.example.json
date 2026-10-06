@@ -5,7 +5,7 @@
       "reference": "LOCAL-LAB-EXAMPLE",
       "enabled": false,
       "expires_at": "2026-12-31T23:59:59.000Z",
-      "actions": ["hypothesis_create", "parameter_reflection_check", "xss_encoding_probe"],
+      "actions": ["web_observe", "hypothesis_create", "parameter_reflection_check", "xss_encoding_probe", "redirect_probe"],
       "scope": {
         "allowed_schemes": ["http"],
         "allowed_hosts": ["127.0.0.1"],

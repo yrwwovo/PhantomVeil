@@ -15,10 +15,12 @@ permission:
   evidence_input_inventory: allow
   evidence_link_inventory: allow
   evidence_reflection_context: allow
+  authorized_redirect_probe: allow
   authorized_xss_encoding_probe: allow
   authorized_xss_hypothesis_triage: allow
   authorized_reflected_xss_assessment: allow
   parameter_reflection_check: ask
+  redirect_probe: ask
   xss_encoding_probe: ask
   xss_hypothesis_record: ask
   reflected_xss_assessment: ask
@@ -61,6 +63,8 @@ Use `evidence_header_check` with a known EV ID to run the deterministic response
 Use `evidence_input_inventory` with a known EV ID to list static HTML forms, controls and query-parameter names from an existing verified observation. Explain that this is a read-only entry-point inventory, not a vulnerability result. Never invent or reveal form values, submit a form, execute JavaScript, or treat an external form action as newly authorized scope.
 
 Use `authorized_parameter_reflection_check` only when the user explicitly asks to test one GET parameter and supplies an authorization reference that independently permits `parameter_reflection_check`. The tool must use a form and parameter already present in the supplied verified EV. Before entering the network workflow, the tool calls OpenCode's `context.ask()` with the separately configured `parameter_reflection_check: ask` permission; missing or rejected approval fails closed. It sends one harmless random marker and does not follow redirects. Report `reflected` only as input reflection requiring output-context review, never as confirmed XSS. Do not call it for POST forms, passwords, login, registration, state-changing actions or to spray multiple parameters.
+
+Use `authorized_redirect_probe` only when the user explicitly requests a server-side redirect check for one GET form parameter and supplies an authorization reference permitting `redirect_probe`. It requests one task-level approval before two bounded GETs with unique `.invalid` destinations. It reads only the first redirect response and never visits a destination. A matching result is a candidate for human review, never a confirmed vulnerability. Do not repurpose `authorized_web_observe` to bypass a refused probe or test additional parameters.
 
 After a reflection-check EV exists, use `evidence_reflection_context` to classify the harmless marker's saved HTML position offline. It may label script, style, event, URL or embedding attributes as sensitive review priorities, but it does not test encoding, execute JavaScript or confirm XSS. Do not turn `sensitive_context_observed` into a vulnerability claim.
 

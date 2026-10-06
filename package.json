@@ -9,6 +9,10 @@
   "scripts": {
     "pveil": "node scripts/pveil.ts",
     "agent:eval": "node benchmarks/agent-eval/run.mjs",
+    "hermes:eval": "node benchmarks/hermes-eval/run.mjs",
+    "hermes:pair": "node benchmarks/hermes-eval/pair.mjs",
+    "hermes:assessment-pair": "node benchmarks/hermes-assessment-eval/run.mjs",
+    "hermes:chat": "node scripts/hermes-chat.mjs",
     "scan": "node scripts/web-check.ts",
     "crawl": "node scripts/web-crawl.ts",
     "reflection:check": "node scripts/parameter-reflection-check.ts",
@@ -27,6 +31,8 @@
     "node": ">=22.18"
   },
   "dependencies": {
-    "parse5": "8.0.0"
+    "@modelcontextprotocol/server": "2.2.0",
+    "parse5": "8.0.0",
+    "zod": "4.3.6"
   }
 }

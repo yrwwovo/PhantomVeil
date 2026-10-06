@@ -41,6 +41,11 @@ export interface HttpRequestControl {
   before_request?: (url: string) => Promise<string | undefined>;
 }
 
+export interface HttpGetOptions {
+  // 只返回首个 3xx 响应；由可信工作流指定，绝不连接 Location 目标。
+  observe_first_redirect?: boolean;
+}
+
 export interface RedirectRecord {
   from: string;
   to: string;
@@ -324,6 +329,7 @@ export async function restrictedHttpGet(
   scopeConfig: ScopeConfig,
   policy: HttpGetPolicy,
   control: HttpRequestControl = {},
+  options: HttpGetOptions = {},
 ): Promise<HttpGetResult> {
   const policyError = validatePolicy(policy);
   if (policyError) {
@@ -395,6 +401,22 @@ export async function restrictedHttpGet(
     }
 
     if (response.location && REDIRECT_STATUSES.has(response.status)) {
+      if (options.observe_first_redirect) {
+        return {
+          ok: true,
+          code: "HTTP_RESPONSE",
+          reason: "已取得首个重定向响应，未访问 Location 目标",
+          redirects,
+          response: {
+            url: currentUrl,
+            status: response.status,
+            headers: response.headers,
+            body: response.body,
+            body_bytes: response.bodyBytes,
+            resolved_ip: pinnedResult.address.address,
+          },
+        };
+      }
       if (redirectCount >= policy.max_redirects) {
         return {
           ok: false,

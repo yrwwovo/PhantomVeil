@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "grants": [
+    {
+      "reference": "LAB-OBSERVE-5000",
+      "enabled": true,
+      "expires_at": "2099-01-01T00:00:00.000Z",
+      "actions": ["web_observe"],
+      "scope": {
+        "allowed_schemes": ["http"],
+        "allowed_hosts": ["127.0.0.1"],
+        "allowed_ports": [5000],
+        "allowed_paths": ["/"],
+        "denied_paths": ["/admin/delete"]
+      }
+    }
+  ]
+}

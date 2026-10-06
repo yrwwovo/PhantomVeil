@@ -66,6 +66,23 @@ test("对授权的本地目标执行一次 GET", async (context) => {
   assert.equal(result.response?.resolved_ip, "127.0.0.1");
 });
 
+test("只观察首个重定向响应，不连接 Location 目标", async context => {
+  let requests = 0;
+  const { server, port } = await startServer((_request, response) => {
+    requests++;
+    response.writeHead(302, { location: "https://phantomveil-probe.invalid/marker" });
+    response.end();
+  });
+  context.after(() => closeServer(server));
+  const result = await restrictedHttpGet(`http://127.0.0.1:${port}/go`, scopeFor(port),
+    { ...basePolicy, max_redirects: 0 }, {}, { observe_first_redirect: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.response?.status, 302);
+  assert.equal(result.response?.headers.location, "https://phantomveil-probe.invalid/marker");
+  assert.equal(requests, 1);
+  assert.deepEqual(result.redirects, []);
+});
+
 test("Scope Guard 拒绝后不连接服务器", async (context) => {
   let requests = 0;
   const { server, port } = await startServer((_request, response) => {

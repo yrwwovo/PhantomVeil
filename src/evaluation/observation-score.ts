@@ -56,6 +56,7 @@ export async function scoreObservationRun(
   workspace: string,
   events: AgentRunEvents,
   hits: FixtureHit[],
+  artifactNamespace: "opencode" | "hermes" = "opencode",
 ): Promise<ObservationScore> {
   const base = {
     task_id: task.id, successful_tool_calls: 0, fixture_requests: hits.length,
@@ -93,7 +94,7 @@ export async function scoreObservationRun(
   let allowedDir: string;
   try {
     const evidenceRoot = path.join(workspace, "evidence");
-    const outputRoot = path.join(evidenceRoot, "opencode");
+    const outputRoot = path.join(evidenceRoot, artifactNamespace);
     const parentInfo = await lstat(evidenceRoot);
     const outputInfo = await lstat(outputRoot);
     if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink() ||
@@ -136,7 +137,7 @@ export async function scoreObservationRun(
   let reportText: string;
   try {
     const reportRoot = path.join(workspace, "reports");
-    const outputRoot = path.join(reportRoot, "opencode");
+    const outputRoot = path.join(reportRoot, artifactNamespace);
     const parentInfo = await lstat(reportRoot);
     const outputInfo = await lstat(outputRoot);
     const fileInfo = await lstat(reportFile);

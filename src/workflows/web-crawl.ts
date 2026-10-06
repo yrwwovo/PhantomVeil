@@ -69,7 +69,8 @@ function safeText(value: string): string {
 }
 
 /** 有界、串行、同源的普通链接发现；模型只能提供起始 URL。 */
-export async function runWebCrawl(projectRoot: string, targetUrl: string, control: HttpRequestControl = {}) {
+export async function runWebCrawl(projectRoot: string, targetUrl: string,
+  control: HttpRequestControl = {}, artifactNamespace: "opencode" | "hermes" = "opencode") {
   let seed: URL;
   try {
     if (typeof targetUrl !== "string") throw new Error();
@@ -162,7 +163,7 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string, contro
     } catch { return undefined; }
   };
 
-  const store = new EvidenceStore({ output_dir: path.join(root, "evidence/opencode") });
+  const store = new EvidenceStore({ output_dir: path.join(root, "evidence", artifactNamespace) });
   while (queue.length) {
     if (pages.length >= policy.max_pages) { stopReason = "page_limit"; break; }
     if (requests >= policy.max_requests) { stopReason = "request_limit"; break; }
@@ -200,7 +201,7 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string, contro
       pages.push({ url: final.url, depth: item.depth, code: "EVIDENCE_ERROR" });
       storageFailure = true; stopReason = "storage_error"; break;
     }
-    const report = await generateHeaderCheckReport(saved.file_path, path.join(root, "reports/opencode"));
+    const report = await generateHeaderCheckReport(saved.file_path, path.join(root, "reports", artifactNamespace));
     const page: CrawlPage = { url: final.url, depth: item.depth, code: report.ok ? "CHECKED" : "REPORT_ERROR",
       http_status: final.status, evidence_id: saved.evidence_id, evidence_file: saved.file_path };
     if (!report.ok) {
@@ -257,7 +258,8 @@ export async function runWebCrawl(projectRoot: string, targetUrl: string, contro
   ].join("\n");
   const result = { start_url: seed.href, policy, requests, checked: checked.length, failed,
     stop_reason: stopReason, skipped, pages, input_map: inputMap, user_summary: userSummary };
-  const reportPath = path.join(root, "reports/opencode", `CRAWL-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
+  const reportPath = path.join(root, "reports", artifactNamespace,
+    `CRAWL-${Date.now()}-${randomUUID().slice(0, 8)}.md`);
   const markdown = ["# 受限爬取与响应头检查", "", ...userSummary.split("\n").map(safeText), "",
     "| 页面 | 深度 | HTTP | 结果 | 需复核项 | 证据 |", "|---|---:|---:|---|---:|---|",
     ...pages.map(p => `| ${safeText(p.url)} | ${p.depth} | ${p.http_status ?? "—"} | ${p.code} | ${p.summary?.review ?? "—"} | ${p.evidence_id ?? "—"} |`),

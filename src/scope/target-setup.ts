@@ -144,7 +144,7 @@ export async function runTargetSetup(
   const registry: AuthorizationRegistry = {
     schema_version: 1,
     grants: [{ reference, enabled: true, expires_at: expiresAt,
-      actions: ["hypothesis_create", "parameter_reflection_check", "xss_encoding_probe"],
+      actions: ["web_observe", "hypothesis_create", "parameter_reflection_check", "xss_encoding_probe", "redirect_probe"],
       scope }],
   };
 

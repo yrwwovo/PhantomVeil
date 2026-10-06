@@ -40,6 +40,7 @@ export interface XssHypothesisApprovalDetails {
 
 export interface XssHypothesisTriageOptions {
   approve?: (details: XssHypothesisApprovalDetails) => Promise<void>;
+  artifactNamespace?: "opencode" | "hermes";
 }
 
 function headerValue(headers: Record<string, string | string[]>, name: string): string | undefined {
@@ -47,14 +48,15 @@ function headerValue(headers: Record<string, string | string[]>, name: string): 
   return Array.isArray(value) ? value.join(";") : value;
 }
 
-async function loadProjectEvidence(root: string, evidenceId: string) {
+async function loadProjectEvidence(root: string, evidenceId: string,
+  artifactNamespace: "opencode" | "hermes") {
   if (!EVIDENCE_ID.test(evidenceId)) {
     return { ok: false as const, code: "INVALID_INPUT", reason: "证据编号格式无效" };
   }
   let filePath: string;
   try {
     const canonicalRoot = await realpath(root);
-    const relativeFile = path.join("evidence", "opencode", `${evidenceId}.json`);
+    const relativeFile = path.join("evidence", artifactNamespace, `${evidenceId}.json`);
     filePath = await realpath(path.join(canonicalRoot, relativeFile));
     if (path.relative(canonicalRoot, filePath) !== relativeFile) {
       return { ok: false as const, code: "PATH_REJECTED", reason: "证据文件被重定向到项目外部" };
@@ -114,9 +116,10 @@ export async function runXssHypothesisTriage(
       reason: "请提供两条不同的完整 EV 编号和本地授权引用" };
   }
   const root = path.resolve(projectRoot);
+  const artifactNamespace = options.artifactNamespace ?? "opencode";
   const [reflection, encoding] = await Promise.all([
-    loadProjectEvidence(root, input.reflection_evidence_id),
-    loadProjectEvidence(root, input.encoding_evidence_id),
+    loadProjectEvidence(root, input.reflection_evidence_id, artifactNamespace),
+    loadProjectEvidence(root, input.encoding_evidence_id, artifactNamespace),
   ]);
   if (!reflection.ok) return reflection;
   if (!encoding.ok) return encoding;
@@ -210,7 +213,7 @@ export async function runXssHypothesisTriage(
     return { ok: false as const, code: "AUTHORIZATION_DENIED", reason: authorization.reason };
   }
 
-  const store = new HypothesisStore(path.join(root, "hypotheses", "opencode"));
+  const store = new HypothesisStore(path.join(root, "hypotheses", artifactNamespace));
   const listed = await store.list();
   if (!listed.ok) return listed;
   const existing = listed.records.find(item =>
