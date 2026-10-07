@@ -112,6 +112,19 @@ export function createHermesMcpServer(service: HermesTaskService,
     details => askApproval(`PhantomVeil 请求完整低影响反射型 XSS 初步评估：${details.target}。` +
       `最多检查 ${details.max_parameters} 个安全 GET 参数，可能写入 suspected HYP。` +
       "整次任务最多 20 次 GET；不执行脚本或确认漏洞。是否批准？"))));
+  server.registerTool("verify_hypothesis", {
+    description: "对已记录的 suspected 假设运行主链路验证阶段：按漏洞类型自动选择验证器插件执行 verify/judge，并按状态机经 testing 回写 confirmed/rejected/inconclusive。metadata 为插件专属的验证输入（形状取决于插件）。需人工批准。",
+    inputSchema: z.object({
+      hypothesis_id: z.string().describe("要验证的 HYP 假设编号"),
+      kind: z.string().describe("漏洞类型键，如 reflected_xss / open_redirect，用于路由到插件"),
+      endpoint: z.url().optional(),
+      parameter_name: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional().describe("插件专属验证输入"),
+      evidence_ids: z.array(z.string()).optional(),
+    }),
+  }, async (input) => response(await service.verifyHypothesis(input, details => askApproval(
+    `PhantomVeil 将对假设 ${details.hypothesis_id}（类型 ${details.kind}）运行验证器：` +
+      "按候选类型自动选插件执行验证，并按状态机经 testing 回写到 confirmed/rejected/inconclusive。是否批准？"))));
   return server;
 }
 

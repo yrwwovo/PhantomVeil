@@ -17,6 +17,10 @@ import type { VerifierRegistry } from "../verifiers/verifier-registry.ts";
  * onto the hypothesis through the real state machine (passing through "testing",
  * honoring the confirm requirements). The stage never knows about any specific
  * vulnerability class; adding a plugin needs no change here.
+ *
+ * An optional `commit` hook is invoked after each individual transition so a
+ * persistent store (which only accepts one appended history entry per write)
+ * can save step by step. Without it the stage just mutates in memory.
  */
 
 export interface VerificationCandidateInput {
@@ -31,12 +35,16 @@ export interface VerificationCandidateInput {
   evidence_ids?: string[];
 }
 
+export type VerificationCommitResult = { ok: true } | { ok: false; reason: string };
+
 export interface VerificationStageInput {
   hypothesis: Hypothesis;
   registry: VerifierRegistry;
   context: VerifierContext;
   candidate: VerificationCandidateInput;
   now?: () => Date;
+  /** Persist each transition as it happens; a failure aborts the stage. */
+  commit?: (hypothesis: Hypothesis) => Promise<VerificationCommitResult>;
 }
 
 export type VerificationStageResult =
@@ -60,7 +68,7 @@ export type VerificationStageResult =
     }
   | {
       ok: false;
-      code: "TRANSITION_FAILED";
+      code: "TRANSITION_FAILED" | "PERSIST_FAILED";
       reason: string;
       plugin_id: string;
       vulnerability: string;
@@ -95,7 +103,7 @@ function buildCandidate(input: VerificationStageInput): VerifierCandidate {
 export async function runVerificationStage(
   input: VerificationStageInput,
 ): Promise<VerificationStageResult> {
-  const { hypothesis, registry, context, now } = input;
+  const { hypothesis, registry, context, now, commit } = input;
   const candidate = buildCandidate(input);
   const run = await registry.run(candidate, context);
 
@@ -123,9 +131,7 @@ export async function runVerificationStage(
       current,
       {
         to: step,
-        reason: isFinal
-          ? judgment.rationale
-          : `进入验证（${plugin_id}）`,
+        reason: isFinal ? judgment.rationale : `进入验证（${plugin_id}）`,
         // Reproduction steps matter on the confirming step; dedup is handled
         // by the manager. Evidence already attached to the hypothesis is reused.
         ...(isFinal && judgment.reproduction_steps.length > 0
@@ -148,6 +154,22 @@ export async function runVerificationStage(
       };
     }
     current = transition.hypothesis;
+    if (commit) {
+      const committed = await commit(current);
+      if (!committed.ok) {
+        return {
+          ok: false,
+          code: "PERSIST_FAILED",
+          reason: committed.reason,
+          plugin_id,
+          vulnerability,
+          outcome: judgment.outcome,
+          judgment,
+          transitions_applied: applied,
+          hypothesis: current,
+        };
+      }
+    }
     applied.push(step);
   }
 

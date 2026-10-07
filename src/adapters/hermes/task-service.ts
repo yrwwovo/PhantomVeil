@@ -15,6 +15,7 @@ import { runAuthorizedXssEncodingProbe } from "../../workflows/xss-encoding-prob
 import { runXssHypothesisTriage } from "../../workflows/xss-hypothesis-triage.ts";
 import { runAuthorizedHypothesisCreate } from "../../workflows/authorized-hypothesis-create.ts";
 import { runHypothesisGet } from "../../workflows/hypothesis-get.ts";
+import { runVerifyHypothesis } from "../../workflows/verify-hypothesis.ts";
 import { runAuthorizedReflectedXssAssessment } from "../../workflows/reflected-xss-assessment.ts";
 import { runEvidenceInputInventory } from "../../workflows/evidence-input-inventory.ts";
 import { runEvidenceLinkInventory } from "../../workflows/evidence-link-inventory.ts";
@@ -644,6 +645,36 @@ export class HermesTaskService {
       { hypothesis_id: hypothesisId }, "hermes");
     await this.audit({ kind: "tool_result", tool: "hypothesis_get",
       code: result.code, hypothesis_id: hypothesisId });
+    return result;
+  }
+
+  async verifyHypothesis(
+    input: {
+      hypothesis_id: string;
+      kind: string;
+      endpoint?: string;
+      parameter_name?: string;
+      metadata?: Record<string, unknown>;
+      evidence_ids?: string[];
+    },
+    approve: (details: { hypothesis_id: string; kind: string }) => Promise<boolean>,
+  ) {
+    let approved = false;
+    try {
+      approved = await approve({ hypothesis_id: input.hypothesis_id, kind: input.kind });
+    } catch {
+      /* missing approval surface fails closed */
+    }
+    await this.audit({ kind: "approval", tool: "verify_hypothesis",
+      hypothesis_id: input.hypothesis_id, kind: input.kind, approved });
+    if (!approved) {
+      return { ok: false as const, code: "APPROVAL_DENIED",
+        reason: "用户未批准对该假设运行验证" };
+    }
+    const result = await runVerifyHypothesis(this.projectRoot, input, "hermes");
+    await this.audit({ kind: "tool_result", tool: "verify_hypothesis",
+      code: result.code, hypothesis_id: input.hypothesis_id,
+      outcome: "outcome" in result ? result.outcome : null });
     return result;
   }
 
