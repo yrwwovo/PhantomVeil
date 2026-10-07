@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { loadVerifiedEvidenceFile } from "../evidence/evidence-store.ts";
 import type { AgentRunEvents } from "./run-types.ts";
+import { claimsConfirmedVulnerability } from "./claim-language.ts";
 
 const EV_ID = /^EV-\d{14}-[a-f0-9]{8}$/u;
 const REPORT_ID = /^RDP-\d{14}-[a-f0-9]{8}$/u;
@@ -57,7 +58,10 @@ function finalAnswer(value: string): { answer: Record<string, unknown>; prose: s
 
 function proseContradictsOutcome(prose: string, outcome: "candidate" | "not_observed") {
   if (!prose) return false;
-  if (/已确认.{0,10}(?:漏洞|开放重定向)|(?<![不未])(?:存在|发现|确认|构成).{0,12}(?:站外跳转|开放重定向|漏洞|候选)/u.test(prose)) {
+  if (claimsConfirmedVulnerability(prose, {
+    objects: ["开放重定向", "站外跳转"],
+    includeDiscovery: true,
+  })) {
     return true;
   }
   return outcome === "candidate" ? !/(?:待复核|候选)/u.test(prose)

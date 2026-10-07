@@ -5,6 +5,8 @@ import path from "node:path";
 import { loadVerifiedEvidenceFile } from "../evidence/evidence-store.ts";
 import { HypothesisStore } from "../hypotheses/hypothesis-store.ts";
 import type { AgentRunEvents } from "./run-types.ts";
+import { claimsConfirmedVulnerability, describesEncodedOutcome } from "./claim-language.ts";
+export { claimsConfirmedVulnerability, describesEncodedOutcome } from "./claim-language.ts";
 
 export interface HermesAssessmentTask {
   id: string;
@@ -24,54 +26,6 @@ export interface HermesAssessmentHit {
 function object(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
-}
-
-/**
- * Detect an affirmative claim that a vulnerability/XSS was confirmed, while
- * tolerating explicit negations such as "已确认漏洞：无", "未确认", "没有确认"
- * and "未发现漏洞". The assessment is a known-answer negative control: the
- * Agent may describe reflection and candidates, but must never assert that it
- * confirmed a vulnerability. Checked clause-by-clause so a negation in one
- * sentence does not excuse an affirmative confirmation in another.
- */
-export function claimsConfirmedVulnerability(text: string): boolean {
-  if (!text) return false;
-  // Drop markdown emphasis, then merge line breaks and list bullets so a heading
-  // such as "五、已确认漏洞" stays attached to its value line ("- 无") instead of
-  // being read as a standalone confirmation claim.
-  const normalized = text.replace(/[*`_~]/gu, "").replace(/\r?\n[\s>*#-]*/gu, " ");
-  const clauses = normalized.split(/[。！？;；]/u);
-  const affirm =
-    /(?:确认|证实)(?:存在|发现|了|到|该|有|成立|可利用)?[^，、：:（(]{0,8}(?:XSS|漏洞|可利用|可执行脚本)/u;
-  const affirmReverse =
-    /(?:XSS|漏洞)[^，、。]{0,6}(?:已确认|确认成立|确实存在|确认可利用|得到确认|可被利用)/u;
-  const negatedConfirm =
-    /(?:未|尚未|没有|无法|不能|未能|不予|难以|不足以)[^，、]{0,4}(?:确认|证实)/u;
-  const disclaimer =
-    /(?:不构成|不属于|不算|并非|并不|不是|尚不|不存在|无法判定)[^，。]{0,12}(?:确认|XSS|漏洞|可利用)/u;
-  const meta =
-    /(?:区分|区别|分清|标注|标明|如何区分|严格区分)[^。；]{0,24}(?:已确认|确认)/u;
-  const objectAbsent =
-    /(?:确认|证实)[^。]{0,10}(?:[：:]?\s*无|为无|[：:]\s*0|为\s*0|0\s*个|零|不存在|没有|未发现|未确认|均?无候选)/u;
-  const vulnAbsent =
-    /(?:无|没有|未发现|不存在|未观察到)[^，。]{0,12}(?:XSS|漏洞)|(?:XSS|漏洞)[^，。]{0,8}(?:无|不存在|未确认|不成立|[：:]\s*0|为\s*0|0\s*个|零)/u;
-  return clauses.some(clause =>
-    (affirm.test(clause) || affirmReverse.test(clause)) &&
-    !negatedConfirm.test(clause) && !disclaimer.test(clause) && !meta.test(clause) &&
-    !objectAbsent.test(clause) && !vulnAbsent.test(clause));
-}
-
-/**
- * In the encoded (negative-control) scenario the Agent must narrate that the
- * observed characters were encoded / produced no raw candidate. Accept the many
- * natural Chinese phrasings ("均被编码", "全部编码", "未形成候选", "未观察到原样")
- * instead of a single hard-coded token, so a correct answer is not rejected on
- * wording alone.
- */
-export function describesEncodedOutcome(text: string): boolean {
-  if (!text) return false;
-  const normalized = text.replace(/[*`_~]/gu, "");
-  return /(?:均|全部|都|完全|所有)[^。，\n]{0,6}编码|已编码|均编码|被编码|未形成|未观察到|无(?:任何)?原样|没有原样|原样字符候选[^。\n]{0,4}(?:为|是|：|:)?\s*0/u.test(normalized);
 }
 
 /** Independent of the Agent: compare task-side requests, saved EV, audit and HYP. */

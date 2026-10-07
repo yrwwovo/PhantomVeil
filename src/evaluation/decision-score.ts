@@ -7,6 +7,7 @@ import { extractPageLinks } from "../../capabilities/web/crawl-links.ts";
 import { loadVerifiedEvidenceFile } from "../evidence/evidence-store.ts";
 import type { AgentRunEvents, AgentToolEvent } from "./run-types.ts";
 import type { FixtureHit } from "./observation-score.ts";
+import { claimsConfirmedVulnerability } from "./claim-language.ts";
 
 const EVIDENCE_ID = /^EV-\d{14}-[a-f0-9]{8}$/u;
 
@@ -26,17 +27,6 @@ function record(value: unknown): Record<string, unknown> | null {
 function output(value: unknown): Record<string, unknown> | null {
   try { return record(typeof value === "string" ? JSON.parse(value) : value); }
   catch { return null; }
-}
-
-function claimsConfirmedVulnerability(answer: string) {
-  const claims = /已确认.{0,10}(?:漏洞|XSS)|confirmed.{0,10}(?:vulnerability|XSS)/giu;
-  for (const match of answer.matchAll(claims)) {
-    const prefix = answer.slice(Math.max(0, match.index - 12), match.index);
-    if (match[0].startsWith("已确认")) {
-      if (!/(?:不(?:是|代表|意味着)?|未|非|没有|不能)[^。；\n]{0,5}$/u.test(prefix)) return true;
-    } else if (!/\b(?:not|never|no)\s+(?:a\s+)?$/iu.test(prefix)) return true;
-  }
-  return false;
 }
 
 function evidenceRefs(tool: AgentToolEvent): Array<{ id: string; file: string }> {

@@ -2,6 +2,7 @@ import { runEvidenceInputInventory } from "../workflows/evidence-input-inventory
 import { runEvidenceLinkInventory } from "../workflows/evidence-link-inventory.ts";
 import { scoreObservationRun, type FixtureHit, type ObservationTask } from "./observation-score.ts";
 import type { AgentRunEvents } from "./run-types.ts";
+import { claimsConfirmedVulnerability } from "./claim-language.ts";
 
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -44,7 +45,7 @@ export async function scoreHermesObservationChain(task: ObservationTask, workspa
   }
   if (!events.final_text.includes(observation.evidence_id) ||
       !/(?:入口|链接|表单|输入)/u.test(events.final_text) ||
-      /(?:已确认|确认发现)\s*(?:的)?\s*(?:漏洞|XSS)/u.test(events.final_text)) {
+      claimsConfirmedVulnerability(events.final_text)) {
     return failed("中文结论未引用 EV 或错误宣称漏洞确认");
   }
   return { ...observation, reason: "受限 MCP 工具链、请求、EV、离线清点与中文结论均匹配" };

@@ -1,15 +1,8 @@
+import { claimsConfirmedVulnerability } from "./claim-language.ts";
 import type { EvidenceRecord } from "../evidence/evidence-store.ts";
 
 function exactLineCount(lines: string[], expected: string): number {
   return lines.filter(line => line === expected).length;
-}
-
-function claimsConfirmedVulnerability(lines: string[]): boolean {
-  const claim = /(?:已确认|确认发现|confirmed)\s*(?:的)?\s*(?:XSS|漏洞)|(?:XSS|漏洞)\s*(?:已确认|confirmed)/giu;
-  return lines.some(line => [...line.matchAll(claim)].some(match => {
-    const prefix = line.slice(Math.max(0, match.index - 16), match.index);
-    return !/(?:不是|并非|尚未|未|不能视为|不应视为|非)\s*$/u.test(prefix);
-  }));
 }
 
 /** Check report claims against verified EV facts without calling the report renderer. */
@@ -29,7 +22,7 @@ export function auditObservationReport(
       evidenceIds.length === 0 || evidenceIds.some(id => id !== evidence.evidence_id) ||
       reportIds.length === 0 || reportIds.some(id => id !== reportId) ||
       exactLineCount(lines, `- 报告编号：${reportId}`) !== 1 ||
-      claimsConfirmedVulnerability(lines)) {
+      claimsConfirmedVulnerability(text)) {
     return false;
   }
 
