@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -14,6 +15,13 @@ const SOURCE_ROOT = path.resolve(import.meta.dirname, "..");
 const DEFAULT_RUNS_ROOT = path.join(process.env.LOCALAPPDATA ??
   path.join(homedir(), ".local", "share"), "PhantomVeil", "hermes-chat-runs");
 const yamlString = value => JSON.stringify(value.replaceAll("\\", "/"));
+
+/** Prefer the vendored bundled MCP server JS; fall back to the TS source in dev. */
+function mcpServerEntry(root) {
+  const bundled = path.join(root, "src", "adapters", "hermes", "mcp-server.js");
+  return existsSync(bundled) ? bundled
+    : path.join(root, "src", "adapters", "hermes", "mcp-server.ts");
+}
 
 function parseArgs(args) {
   const newTarget = args[2] === "--new-target";
@@ -190,7 +198,7 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
   const config = configuredTemplate +
     `\nbranding:\n  agent_name: "Phant0mV3il"\n  response_label: "Phant0mV3il"\n` +
     `\nmcp_servers:\n  phantomveil-hermes:\n    command: ${yamlString(process.execPath)}\n` +
-    `    args: [${yamlString(path.join(root, "src", "adapters", "hermes", "mcp-server.ts"))}]\n` +
+    `    args: [${yamlString(mcpServerEntry(root))}]\n` +
     `    env:\n      PVEIL_HERMES_WORKSPACE: ${yamlString(workspace)}\n` +
     `      PVEIL_HERMES_TASK_FILE: ${yamlString(taskFile)}\n` +
     `      PVEIL_HERMES_BUDGET_DIR: ${yamlString(budgetRoot)}\n` +
@@ -239,8 +247,9 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
 
 /** Start a session with no target or network grant; only in-chat binding can unlock one read-only task. */
 export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
-  runsRoot = DEFAULT_RUNS_ROOT } = {}) {
+  configRoot = sourceRoot, runsRoot = DEFAULT_RUNS_ROOT } = {}) {
   const root = path.resolve(sourceRoot);
+  const configBase = path.resolve(configRoot);
   const outputRoot = path.resolve(runsRoot);
   if (!outsideSource(outputRoot, root)) throw new Error("Hermes 任务目录必须位于源码仓库外");
   const taskId = `hermes-${randomUUID()}`;
@@ -272,12 +281,12 @@ export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
   const config = configuredTemplate +
     `\nbranding:\n  agent_name: "Phant0mV3il"\n  response_label: "Phant0mV3il"\n` +
     `\nmcp_servers:\n  phantomveil-hermes:\n    command: ${yamlString(process.execPath)}\n` +
-    `    args: [${yamlString(path.join(root, "src", "adapters", "hermes", "mcp-server.ts"))}]\n` +
+    `    args: [${yamlString(mcpServerEntry(root))}]\n` +
     `    env:\n      PVEIL_HERMES_WORKSPACE: ${yamlString(workspace)}\n` +
     `      PVEIL_HERMES_TASK_FILE: ${yamlString(taskFile)}\n` +
     `      PVEIL_HERMES_BUDGET_DIR: ${yamlString(budgetRoot)}\n` +
     `      PVEIL_HERMES_AUDIT_FILE: ${yamlString(auditFile)}\n` +
-    `      PVEIL_HERMES_SOURCE_CONFIG_ROOT: ${yamlString(root)}\n` +
+    `      PVEIL_HERMES_SOURCE_CONFIG_ROOT: ${yamlString(configBase)}\n` +
     `    tools:\n      include: [${toolNames.join(", ")}]\n` +
     `      resources: false\n      prompts: false\n` +
     `    elicitation:\n      enabled: true\n      timeout: 300\n`;
@@ -316,7 +325,10 @@ export async function prepareHermesNewTargetChat({ url, approve, resolveIps,
 }
 
 export function hermesChatRuntime({ env = process.env, sourceRoot = SOURCE_ROOT } = {}) {
-  const fork = path.join(path.dirname(sourceRoot), "phantomveil-hermes");
+  const resolvedSource = path.resolve(sourceRoot);
+  const fork = path.basename(path.dirname(resolvedSource)) === "vendor"
+    ? path.resolve(resolvedSource, "..", "..")
+    : path.join(path.dirname(resolvedSource), "phantomveil-hermes");
   return {
     python: env.PVEIL_HERMES_PYTHON ?? path.join(fork, ".venv",
       process.platform === "win32" ? "Scripts" : "bin",
@@ -347,9 +359,10 @@ async function main() {
     const info = await lstat(file);
     if (!info.isFile()) throw new Error("PhantomVeil Hermes 运行入口不可用");
   }
+  const configRoot = process.env.PVEIL_HERMES_CONFIG_ROOT ?? SOURCE_ROOT;
   let task;
   if (awaitingTarget) {
-    task = await prepareHermesAwaitTargetChat();
+    task = await prepareHermesAwaitTargetChat({ configRoot });
     process.stdout.write("PhantomVeil Hermes 会话即将启动。请在对话中说明已授权目标与测试任务；确认绑定前不会请求目标。\n");
   } else if (newTarget) {
     const consoleInput = createInterface({ input: process.stdin, output: process.stdout });
@@ -364,7 +377,7 @@ async function main() {
     } finally { consoleInput.close(); }
   } else {
     task = await prepareHermesChat({ url, reference, crawl, reflection, redirect, encoding,
-      assessment });
+      assessment, configRoot });
   }
   process.stdout.write(`PhantomVeil Hermes 任务 ${task.taskId}\n记录目录：${task.runDir}\n`);
   const child = spawn(runtime.python, [runtime.runtime, "--session-home", task.profile,

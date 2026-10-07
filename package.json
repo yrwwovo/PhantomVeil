@@ -13,6 +13,7 @@
     "hermes:pair": "node benchmarks/hermes-eval/pair.mjs",
     "hermes:assessment-pair": "node benchmarks/hermes-assessment-eval/run.mjs",
     "hermes:chat": "node scripts/hermes-chat.mjs",
+    "build:hermes-core": "node scripts/build-hermes-core.mjs",
     "scan": "node scripts/web-check.ts",
     "crawl": "node scripts/web-crawl.ts",
     "reflection:check": "node scripts/parameter-reflection-check.ts",
@@ -34,5 +35,8 @@
     "@modelcontextprotocol/server": "2.2.0",
     "parse5": "8.0.0",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
   }
 }
