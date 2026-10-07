@@ -204,3 +204,56 @@ test("checkScope returns in_scope false mapping and throws 403 as OUT_OF_SCOPE",
     (error: unknown) => error instanceof ReconLabError && error.code === "OUT_OF_SCOPE",
   );
 });
+
+test("getQueueItem: 200 returns item and etag from the ETag header", async () => {
+  const client = makeClient(async (url, init) => {
+    assert.equal(init.method, "GET");
+    assert.ok(url.endsWith("/api/verification/queue/Q1"));
+    return jsonResponse(
+      200,
+      { contract_version: 2, item: { id: "Q1", etag: "body-etag", lease: { active: true, holder: "w1" } } },
+      { ETag: "header-etag" },
+    );
+  });
+  const res = await client.getQueueItem("Q1");
+  assert.equal(res.notModified, false);
+  assert.equal(res.etag, "header-etag"); // header wins
+  assert.equal(res.item?.id, "Q1");
+  assert.equal(res.item?.lease?.active, true);
+  assert.equal(res.item?.lease?.holder, "w1");
+});
+
+test("getQueueItem: 200 falls back to item.etag when no ETag header", async () => {
+  const client = makeClient(async () =>
+    jsonResponse(200, { contract_version: 2, item: { id: "Q1", etag: "body-etag" } }, {}),
+  );
+  const res = await client.getQueueItem("Q1");
+  assert.equal(res.etag, "body-etag");
+});
+
+test("getQueueItem: 304 with If-None-Match returns notModified and no body", async () => {
+  let sentINM: string | undefined;
+  const client = makeClient(async (_url, init) => {
+    sentINM = init.headers["If-None-Match"];
+    return jsonResponse(304, undefined, {});
+  });
+  const res = await client.getQueueItem("Q1", { ifNoneMatch: "e-current" });
+  assert.equal(sentINM, "e-current");
+  assert.equal(res.notModified, true);
+  assert.equal(res.item, undefined);
+  assert.equal(res.etag, undefined);
+});
+
+test("getQueueItem: a superseded record returns normally (no throw)", async () => {
+  const client = makeClient(async () =>
+    jsonResponse(
+      200,
+      { contract_version: 2, item: { id: "Q1", etag: "e1", state: "confirmed", superseded_by: "Q9" } },
+      { ETag: "e1" },
+    ),
+  );
+  const res = await client.getQueueItem("Q1");
+  assert.equal(res.notModified, false);
+  assert.equal(res.item?.superseded_by, "Q9");
+  assert.equal(res.etag, "e1");
+});

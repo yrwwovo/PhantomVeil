@@ -23,11 +23,14 @@ import {
  * thresholds match the platform, uploads evidence, and writes the verdict back
  * under the contract concurrency rules (If-Match optimistic lock + lease).
  *
- * NOTE on "GET the fresh item" (brief step a): openapi.yaml exposes no read-only
- * GET /api/verification/queue/{id}. We obtain the freshest etag + confirm the
- * lease is still ours by RE-CLAIMING (same worker_id => server renews the lease
- * and returns the item). A lost lease therefore surfaces as 409
- * ALREADY_CLAIMED/LEASE_EXPIRED, which we treat as "lease lost -> abandon".
+ * Freshness is a CLEAN READ: GET /api/verification/queue/{id} (contract v2) is a
+ * read-only preflight that never touches the lease or advances the etag. We use
+ * it right before PATCH (the repro can take minutes) and again on a 412, reading
+ * the fresh etag (ETag header, item.etag fallback) and the authoritative
+ * item.lease to decide whether the lease is still ours before writing. `claim` is
+ * never used as a read: it is a write that renews the lease and may rotate the
+ * lease_token, so it is reserved for (re)acquiring a lease and its response token
+ * + etag always overwrite our locals.
  */
 
 export type SyncItemOutcome =
@@ -179,7 +182,7 @@ function defaultRunVerification(
 
 /**
  * Pull suspected findings and verify each, writing verdicts back with the full
- * claim / verify / evidence / If-Match write-back concurrency dance.
+ * claim / verify / evidence / clean-read + If-Match write-back concurrency dance.
  */
 export async function verifyFromReconLab(
   client: ReconLabClient,
@@ -203,25 +206,25 @@ export async function verifyFromReconLab(
     }
   };
 
-  // Re-claim to read the freshest item + etag and confirm the lease is still ours.
-  const refreshItem = async (
-    id: string,
-    leaseToken: string,
-  ): Promise<{ item: QueueItem; token: string } | { abandon: SyncItemResult }> => {
+  type FreshRead =
+    | { item: QueueItem; etag: string; leaseOk: boolean }
+    | { abandon: SyncItemResult };
+
+  // Clean read-only preflight: GET the item for the freshest etag + authoritative
+  // lease state. Never renews the lease and never rotates the token (unlike claim).
+  const freshRead = async (id: string, preferEtag: string): Promise<FreshRead> => {
     try {
-      const claim = await client.claim(id, { worker_id: workerId, lease_seconds: leaseSeconds });
-      return { item: (claim.item ?? { id, kind: "", state: "" }) as QueueItem, token: claim.lease_token ?? leaseToken };
+      const res = await client.getQueueItem(id);
+      const item = (res.item ?? { id, kind: "", state: "" }) as QueueItem;
+      const etag = res.etag ?? (item.etag as string | undefined) ?? preferEtag ?? "";
+      const lease = (item.lease ?? {}) as { active?: boolean; holder?: string };
+      const leaseOk = lease.active === true && lease.holder === workerId;
+      return { item, etag, leaseOk };
     } catch (error) {
       if (!(error instanceof ReconLabError)) {
-        return { abandon: { id, outcome: "error", detail: `refresh:${String(error)}` } };
+        return { abandon: { id, outcome: "error", detail: `read:${String(error)}` } };
       }
-      if (["ALREADY_CLAIMED", "LEASE_EXPIRED", "NO_LEASE", "ALREADY_FINAL", "TERMINAL_IMMUTABLE"].includes(error.code)) {
-        return { abandon: { id, outcome: "lease_lost", detail: error.code } };
-      }
-      if (["OUT_OF_SCOPE", "SCOPE_EXPIRED"].includes(error.code)) {
-        return { abandon: { id, outcome: "scope_void", detail: error.code } };
-      }
-      return { abandon: { id, outcome: "error", detail: `refresh:${error.code}` } };
+      return { abandon: { id, outcome: "error", detail: `read:${error.code}` } };
     }
   };
 
@@ -232,15 +235,18 @@ export async function verifyFromReconLab(
     evidenceRefs: EvidenceRef[],
   ): Promise<SyncItemResult> => {
     const id = item.id;
-    let token = leaseToken;
+    const token = leaseToken; // a clean read never rotates the token; only claim does.
     let attempts = 0;
 
-    // (a) Freshest etag right before writing (and confirm the lease).
-    const first = await refreshItem(id, token);
+    // (a) Pre-write freshness: a clean read right before PATCH (repro may have
+    // taken minutes). Use its etag as If-Match and confirm the lease is still ours.
+    const first = await freshRead(id, (item.etag as string) ?? "");
     if ("abandon" in first) return first.abandon;
+    if (!first.leaseOk) {
+      return { id, outcome: "lease_lost", detail: "lease_not_held" };
+    }
     let fresh = first.item;
-    let etag = (fresh.etag as string) ?? (item.etag as string) ?? "";
-    token = first.token;
+    let etag = first.etag || (item.etag as string) || "";
 
     for (;;) {
       attempts += 1;
@@ -260,36 +266,29 @@ export async function verifyFromReconLab(
           await safeRelease(id, token, "write error");
           return { id, outcome: "error", detail: String(error), attempts };
         }
-        // 412: content moved under us.
+        // 412: content moved under us -> authoritative clean re-read (NOT re-claim).
         if (error.code === "PRECONDITION_FAILED") {
           if (attempts >= maxPre) {
             await safeRelease(id, token, "precondition retries exhausted");
             return { id, outcome: "error", detail: "precondition_exhausted", attempts };
           }
-          // Confirm the lease is still ours via heartbeat (also re-checks scope).
-          try {
-            await client.heartbeat(id, { lease_token: token, lease_seconds: leaseSeconds });
-          } catch (hb) {
-            if (hb instanceof ReconLabError) {
-              if (["LEASE_EXPIRED", "NO_LEASE"].includes(hb.code)) {
-                return { id, outcome: "lease_lost", detail: hb.code, attempts };
-              }
-              if (["SCOPE_EXPIRED", "OUT_OF_SCOPE"].includes(hb.code)) {
-                return { id, outcome: "scope_void", detail: hb.code, attempts };
-              }
-              return { id, outcome: "error", detail: `heartbeat:${hb.code}`, attempts };
-            }
-            return { id, outcome: "error", detail: `heartbeat:${String(hb)}`, attempts };
-          }
-          // Re-GET fresh etag + merge, then retry.
-          const again = await refreshItem(id, token);
+          // Shortcut: the 412 body/ETag header carries the new version so we can
+          // skip discovering it, but the authoritative lease check is the GET.
+          const shortcutEtag =
+            typeof error.data?.current_etag === "string"
+              ? (error.data.current_etag as string)
+              : undefined;
+          const again = await freshRead(id, shortcutEtag ?? etag);
           if ("abandon" in again) return { ...again.abandon, attempts };
+          if (!again.leaseOk) {
+            // Lease is no longer ours: abandon, do NOT write this round's verdict.
+            return { id, outcome: "lease_lost", detail: "lease_not_held", attempts };
+          }
           fresh = again.item;
-          etag = (fresh.etag as string) ?? etag;
-          token = again.token;
+          etag = shortcutEtag ?? again.etag ?? etag;
           continue;
         }
-        // 428: missing If-Match (we always send it) - defensive single retry.
+        // 428: missing If-Match (we always send one) - defensive bounded retry.
         if (error.code === "PRECONDITION_REQUIRED") {
           if (attempts >= maxPre) {
             await safeRelease(id, token, "precondition required loop");
@@ -317,7 +316,8 @@ export async function verifyFromReconLab(
   const processItem = async (item: QueueItem): Promise<SyncItemResult> => {
     const id = item.id;
 
-    // 1. Claim.
+    // 1. Claim (acquire the lease). The response is authoritative: always overwrite
+    //    our lease_token + etag from it, because a (re)claim may rotate the token.
     let leaseToken: string;
     let current: QueueItem = item;
     try {
@@ -398,7 +398,7 @@ export async function verifyFromReconLab(
             return { id, outcome: "scope_void", detail: error.code };
           }
         }
-        // Other heartbeat errors are non-fatal; the write-back refresh re-checks.
+        // Other heartbeat errors are non-fatal; the pre-write clean read re-checks.
       }
     }
 

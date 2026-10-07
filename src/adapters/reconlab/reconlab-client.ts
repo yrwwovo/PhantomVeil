@@ -227,6 +227,8 @@ export class ReconLabClient {
       query?: Record<string, unknown>;
       headers?: Record<string, string>;
       body?: unknown;
+      /** Non-2xx statuses to return instead of throwing (e.g. 304 for conditional GET). */
+      acceptStatuses?: number[];
     } = {},
   ): Promise<RawResponse> {
     let url = this.baseUrl + path;
@@ -266,7 +268,8 @@ export class ReconLabClient {
         await this.sleep(this.retryAfterSeconds(res) * 1000);
         continue;
       }
-      if (!ok) throw this.makeError(res);
+      const accepted = ok || (opts.acceptStatuses?.includes(status) ?? false);
+      if (!accepted) throw this.makeError(res);
       return res;
     }
   }
@@ -297,6 +300,34 @@ export class ReconLabClient {
       next_cursor: (body.next_cursor as string | null) ?? null,
       rate_limit: body.rate_limit,
     };
+  }
+
+  /**
+   * Clean read-only preflight for a single queue item (contract v2 addition).
+   *
+   * Does not require or touch the lease: never advances rev / changes etag. The
+   * returned etag is same-source as PATCH's If-Match (read it, write it), taken
+   * from the ETag response header with item.etag as fallback. item.lease tells
+   * us in one call whether the lease is still ours. With ifNoneMatch set, a 304
+   * returns { notModified: true } and an empty body (cheap polling). A superseded
+   * record is returned normally (check item.superseded_by), not a 409.
+   */
+  async getQueueItem(
+    id: string,
+    opts: { ifNoneMatch?: string } = {},
+  ): Promise<{ item?: QueueItem; etag?: string; notModified: boolean }> {
+    const res = await this.request("GET", `/api/verification/queue/${encodeURIComponent(id)}`, {
+      ...(opts.ifNoneMatch ? { headers: { "If-None-Match": opts.ifNoneMatch } } : {}),
+      acceptStatuses: [304],
+    });
+    if (res.status === 304) {
+      return { notModified: true };
+    }
+    const body = asRecord(res.body) ?? {};
+    const item = body.item as QueueItem | undefined;
+    const headerEtag = headerGet(res.headers, "ETag");
+    const etag = headerEtag ?? (item?.etag as string | undefined);
+    return { item, etag, notModified: false };
   }
 
   async claim(
