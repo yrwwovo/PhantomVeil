@@ -25,12 +25,14 @@ import {
  *
  * Freshness is a CLEAN READ: GET /api/verification/queue/{id} (contract v2) is a
  * read-only preflight that never touches the lease or advances the etag. We use
- * it right before PATCH (the repro can take minutes) and again on a 412, reading
- * the fresh etag (ETag header, item.etag fallback) and the authoritative
- * item.lease to decide whether the lease is still ours before writing. `claim` is
- * never used as a read: it is a write that renews the lease and may rotate the
- * lease_token, so it is reserved for (re)acquiring a lease and its response token
- * + etag always overwrite our locals.
+ * it once right before PATCH (the repro can take minutes) to get the If-Match etag
+ * and confirm the lease is still ours, and to chase a superseded_by successor. A
+ * 412 on the PATCH carries only the new etag (ETag header / data.current_etag),
+ * so we simply swap it in and retry once; lease / terminal / superseded outcomes
+ * all come from a 409 on the PATCH, never a 412. `claim` is never used as a read:
+ * it is a write that renews the lease and may rotate the lease_token, so it is
+ * reserved for (re)acquiring a lease and its response token + etag always
+ * overwrite our locals.
  */
 
 export type SyncItemOutcome =
@@ -42,6 +44,7 @@ export type SyncItemOutcome =
   | "scope_void"
   | "lease_lost"
   | "superseded"
+  | "abandoned"
   | "error";
 
 export interface SyncItemResult {
@@ -193,7 +196,7 @@ export async function verifyFromReconLab(
 ): Promise<SyncRunSummary> {
   const workerId = args.workerId;
   const leaseSeconds = options.leaseSeconds ?? 900;
-  const maxPre = options.maxPreconditionRetries ?? 3;
+  const maxPre = options.maxPreconditionRetries ?? 1;
   const rubricProvider = options.rubricProvider ?? client.createRubricProvider();
   const registry = options.registry ?? createDefaultVerifierRegistry();
   const artifactNamespace = options.artifactNamespace ?? "opencode";
@@ -240,26 +243,51 @@ export async function verifyFromReconLab(
     let attempts = 0;
 
     // (a) Pre-write freshness: a clean read right before PATCH (repro may have
-    // taken minutes). Use its etag as If-Match and confirm the lease is still ours.
+    // taken minutes). Resolve which record we will actually write to and confirm
+    // the lease is still ours.
     const first = await freshRead(id, (item.etag as string) ?? "");
     if ("abandon" in first) return first.abandon;
-    // A superseded/retired record is returned normally by GET (not 409); never
-    // PATCH onto it. Reopening via `supersedes` is out of scope here.
-    const supersededBy = first.item.superseded_by;
-    if (typeof supersededBy === "string" && supersededBy !== "") {
-      return { id, outcome: "superseded", detail: `superseded_by:${supersededBy}` };
-    }
-    if (!first.leaseOk) {
-      return { id, outcome: "lease_lost", detail: "lease_not_held" };
-    }
+
+    // A GET returns a superseded / retired record normally (not 409); never PATCH
+    // onto it. Instead chase the successor id and only write if THAT record is
+    // alive and its lease is ours. We never fabricate a state-machine transition
+    // or a supersedes POST in the adapter.
+    let writeId = id;
     let fresh = first.item;
     let etag = first.etag || (item.etag as string) || "";
+    let leaseOk = first.leaseOk;
 
+    const supersededBy = first.item.superseded_by;
+    if (typeof supersededBy === "string" && supersededBy !== "") {
+      const succ = await freshRead(supersededBy, "");
+      if ("abandon" in succ) {
+        return { id, outcome: "superseded", detail: `superseded_by:${supersededBy}:successor_unavailable` };
+      }
+      const succState = typeof succ.item.state === "string" ? succ.item.state : "";
+      const succSuperseded =
+        typeof succ.item.superseded_by === "string" && succ.item.superseded_by !== "";
+      const succAlive = succState !== "" && !TERMINAL_STATES.has(succState) && !succSuperseded;
+      if (!(succAlive && succ.leaseOk)) {
+        // Successor is dead / terminal / superseded, or not leased to us: abandon.
+        return { id, outcome: "superseded", detail: `superseded_by:${supersededBy}` };
+      }
+      // Successor is alive and the lease is ours: retarget the write onto it.
+      writeId = supersededBy;
+      fresh = succ.item;
+      etag = succ.etag;
+      leaseOk = succ.leaseOk;
+    }
+
+    if (!leaseOk) {
+      return { id, outcome: "lease_lost", detail: "lease_not_held" };
+    }
+
+    let precond = 0;
     for (;;) {
       attempts += 1;
       const body = buildVerdictBody(verdict, fresh, token);
       try {
-        const res = await client.patchVerdict(id, etag, body);
+        const res = await client.patchVerdict(writeId, etag, body);
         return {
           id,
           outcome: verdict.state as SyncItemOutcome,
@@ -270,42 +298,47 @@ export async function verifyFromReconLab(
         };
       } catch (error) {
         if (!(error instanceof ReconLabError)) {
-          await safeRelease(id, token, "write error");
+          await safeRelease(writeId, token, "write error");
           return { id, outcome: "error", detail: String(error), attempts };
         }
-        // 412: content moved under us. The 412 response already carries the new
-        // content version (ETag header, body data.current_etag fallback), so we
-        // retry the PATCH with it directly -- no extra GET round-trip. Lease loss
-        // and terminal/superseded are NOT 412; they come back as 409 on the PATCH
-        // and are handled below, so this branch is purely the etag swap.
+        // 412: the response carries ONLY the new etag (ETag header /
+        // data.current_etag) -- no lease or state info -- so this branch does
+        // exactly one thing: swap in that etag and retry the PATCH once. A repeat
+        // 412 means live contention: abandon the item back to the queue (release
+        // the lease) and move on. Every lease / terminal / superseded decision
+        // comes from a 409 on the PATCH below, never from a 412.
         if (error.code === "PRECONDITION_FAILED") {
-          if (attempts >= maxPre) {
-            await safeRelease(id, token, "precondition retries exhausted");
-            return { id, outcome: "error", detail: "precondition_exhausted", attempts };
-          }
           const nextEtag =
             error.etag ??
             (typeof error.data?.current_etag === "string" ? (error.data.current_etag as string) : undefined);
           if (!nextEtag) {
-            await safeRelease(id, token, "precondition without etag");
+            await safeRelease(writeId, token, "precondition without etag");
             return { id, outcome: "error", detail: "precondition_no_etag", attempts };
           }
+          if (precond >= maxPre) {
+            await safeRelease(writeId, token, "precondition conflict, back to queue");
+            return { id, outcome: "abandoned", detail: "precondition_conflict", attempts };
+          }
+          precond += 1;
           etag = nextEtag;
           continue;
         }
-        // 428: missing If-Match (we always send one) - defensive bounded retry.
+        // 428: missing If-Match (we always send one) - single defensive retry.
         if (error.code === "PRECONDITION_REQUIRED") {
-          if (attempts >= maxPre) {
-            await safeRelease(id, token, "precondition required loop");
+          if (precond >= maxPre) {
+            await safeRelease(writeId, token, "precondition required loop");
             return { id, outcome: "error", detail: "precondition_required", attempts };
           }
+          precond += 1;
           continue;
         }
-        // Lease gone (409) => stop writing this item.
+        // Lease gone (409) => stop writing. Do NOT re-claim this item in this run.
         if (["LEASE_EXPIRED", "NO_LEASE"].includes(error.code)) {
           return { id, outcome: "lease_lost", detail: error.code, attempts };
         }
-        // Record went terminal / got superseded under us (409) => do not write.
+        // 409 terminal / superseded under us => minimal abandon. PROVISIONAL: the
+        // ReconLab dev is still confirming whether etag is recomputed on supersede,
+        // which decides if this path is even reachable. Keep this logic minimal.
         if (["TERMINAL_IMMUTABLE", "ALREADY_SUPERSEDED", "ALREADY_FINAL"].includes(error.code)) {
           return { id, outcome: "superseded", detail: error.code, attempts };
         }
@@ -313,10 +346,10 @@ export async function verifyFromReconLab(
           return { id, outcome: "scope_void", detail: error.code, attempts };
         }
         if (error.code === "RUBRIC_VIOLATION") {
-          await safeRelease(id, token, "platform rubric violation");
+          await safeRelease(writeId, token, "platform rubric violation");
           return { id, outcome: "rubric_violation", detail: error.code, attempts };
         }
-        await safeRelease(id, token, `write error ${error.code}`);
+        await safeRelease(writeId, token, `write error ${error.code}`);
         return { id, outcome: "error", detail: error.code, attempts };
       }
     }
