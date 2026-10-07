@@ -41,6 +41,7 @@ export type SyncItemOutcome =
   | "skipped_claimed"
   | "scope_void"
   | "lease_lost"
+  | "superseded"
   | "error";
 
 export interface SyncItemResult {
@@ -242,6 +243,12 @@ export async function verifyFromReconLab(
     // taken minutes). Use its etag as If-Match and confirm the lease is still ours.
     const first = await freshRead(id, (item.etag as string) ?? "");
     if ("abandon" in first) return first.abandon;
+    // A superseded/retired record is returned normally by GET (not 409); never
+    // PATCH onto it. Reopening via `supersedes` is out of scope here.
+    const supersededBy = first.item.superseded_by;
+    if (typeof supersededBy === "string" && supersededBy !== "") {
+      return { id, outcome: "superseded", detail: `superseded_by:${supersededBy}` };
+    }
     if (!first.leaseOk) {
       return { id, outcome: "lease_lost", detail: "lease_not_held" };
     }
@@ -266,26 +273,24 @@ export async function verifyFromReconLab(
           await safeRelease(id, token, "write error");
           return { id, outcome: "error", detail: String(error), attempts };
         }
-        // 412: content moved under us -> authoritative clean re-read (NOT re-claim).
+        // 412: content moved under us. The 412 response already carries the new
+        // content version (ETag header, body data.current_etag fallback), so we
+        // retry the PATCH with it directly -- no extra GET round-trip. Lease loss
+        // and terminal/superseded are NOT 412; they come back as 409 on the PATCH
+        // and are handled below, so this branch is purely the etag swap.
         if (error.code === "PRECONDITION_FAILED") {
           if (attempts >= maxPre) {
             await safeRelease(id, token, "precondition retries exhausted");
             return { id, outcome: "error", detail: "precondition_exhausted", attempts };
           }
-          // Shortcut: the 412 body/ETag header carries the new version so we can
-          // skip discovering it, but the authoritative lease check is the GET.
-          const shortcutEtag =
-            typeof error.data?.current_etag === "string"
-              ? (error.data.current_etag as string)
-              : undefined;
-          const again = await freshRead(id, shortcutEtag ?? etag);
-          if ("abandon" in again) return { ...again.abandon, attempts };
-          if (!again.leaseOk) {
-            // Lease is no longer ours: abandon, do NOT write this round's verdict.
-            return { id, outcome: "lease_lost", detail: "lease_not_held", attempts };
+          const nextEtag =
+            error.etag ??
+            (typeof error.data?.current_etag === "string" ? (error.data.current_etag as string) : undefined);
+          if (!nextEtag) {
+            await safeRelease(id, token, "precondition without etag");
+            return { id, outcome: "error", detail: "precondition_no_etag", attempts };
           }
-          fresh = again.item;
-          etag = shortcutEtag ?? again.etag ?? etag;
+          etag = nextEtag;
           continue;
         }
         // 428: missing If-Match (we always send one) - defensive bounded retry.
@@ -296,9 +301,13 @@ export async function verifyFromReconLab(
           }
           continue;
         }
-        // Lease gone on any non-412 call => stop writing this item.
-        if (["LEASE_EXPIRED", "NO_LEASE", "ALREADY_FINAL", "TERMINAL_IMMUTABLE"].includes(error.code)) {
+        // Lease gone (409) => stop writing this item.
+        if (["LEASE_EXPIRED", "NO_LEASE"].includes(error.code)) {
           return { id, outcome: "lease_lost", detail: error.code, attempts };
+        }
+        // Record went terminal / got superseded under us (409) => do not write.
+        if (["TERMINAL_IMMUTABLE", "ALREADY_SUPERSEDED", "ALREADY_FINAL"].includes(error.code)) {
+          return { id, outcome: "superseded", detail: error.code, attempts };
         }
         if (["SCOPE_EXPIRED", "OUT_OF_SCOPE"].includes(error.code)) {
           return { id, outcome: "scope_void", detail: error.code, attempts };

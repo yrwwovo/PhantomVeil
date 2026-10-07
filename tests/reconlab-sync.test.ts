@@ -55,7 +55,7 @@ const item = (id: string, extra: Record<string, unknown> = {}) => ({
   etag: "e1",
   ...extra,
 });
-// Single-item GET response (ETag header + item.lease), used for pre-write + 412 reads.
+// Single-item GET response (ETag header + item.lease), used for the pre-write read.
 const single = (id: string, etag: string, lease: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
   jsonResponse(200, { contract_version: 2, item: { ...item(id, extra), etag, lease } }, { ETag: etag });
 const ours = { active: true, holder: "w1" };
@@ -76,7 +76,7 @@ test("happy path: claim -> verify -> evidence -> clean GET for fresh etag -> PAT
     const m = init.method;
     if (isGet(url, init, "Q1")) {
       getCalls += 1;
-      return single("Q1", "e2", ours); // fresher etag than claim handed us
+      return single("Q1", "e2", ours);
     }
     if (isList(url, init)) {
       return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
@@ -123,7 +123,7 @@ test("happy path: claim -> verify -> evidence -> clean GET for fresh etag -> PAT
   assert.ok(heartbeatCalled);
 });
 
-test("412 then success: GET shows lease still ours -> merge + retry with fresh etag", async () => {
+test("412 then success: retry uses the 412 response etag directly, NO extra GET", async () => {
   let claimCalls = 0;
   let getCalls = 0;
   let patchCalls = 0;
@@ -133,8 +133,7 @@ test("412 then success: GET shows lease still ours -> merge + retry with fresh e
     const m = init.method;
     if (isGet(url, init, "Q1")) {
       getCalls += 1;
-      // first (pre-write) read -> e1; second (post-412) read -> e2
-      return single("Q1", getCalls >= 2 ? "e2" : "e1", ours);
+      return single("Q1", "e1", ours); // single pre-write read only
     }
     if (isList(url, init)) {
       return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
@@ -147,6 +146,7 @@ test("412 then success: GET shows lease still ours -> merge + retry with fresh e
     if (m === "PATCH" && url.endsWith("/queue/Q1")) {
       patchCalls += 1;
       finalIfMatch = init.headers["If-Match"];
+      // 412 carries the new etag on BOTH the ETag header and body.data.current_etag.
       if (finalIfMatch === "e1") return errResponse(412, "PRECONDITION_FAILED", { current_etag: "e2" }, { ETag: "e2" });
       return jsonResponse(200, { contract_version: 2, item: { id: "Q1", state: "confirmed" } });
     }
@@ -160,33 +160,32 @@ test("412 then success: GET shows lease still ours -> merge + retry with fresh e
   assert.equal(r.outcome, "confirmed");
   assert.equal(r.attempts, 2);
   assert.equal(patchCalls, 2);
-  assert.equal(finalIfMatch, "e2");
-  assert.equal(getCalls, 2); // pre-write read + post-412 read; NO re-claim
+  assert.equal(finalIfMatch, "e2"); // retry used the 412 etag
+  assert.equal(getCalls, 1); // ONLY the pre-write read; the 412 branch did not re-GET
   assert.equal(claimCalls, 1);
 });
 
-test("412 then GET shows lease.active:false -> abandoned, verdict not written again", async () => {
+test("412 retry then 409 LEASE_EXPIRED on the PATCH -> lease_lost, not written", async () => {
   let patchCalls = 0;
   let getCalls = 0;
-  let claimCalls = 0;
   const client = makeClient(async (url, init) => {
     const m = init.method;
     if (isGet(url, init, "Q1")) {
       getCalls += 1;
-      // pre-write read: ours; post-412 read: lease lost
-      return getCalls >= 2 ? single("Q1", "e2", { active: false, holder: "w1" }) : single("Q1", "e1", ours);
+      return single("Q1", "e1", ours);
     }
     if (isList(url, init)) {
       return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
     }
     if (m === "POST" && url.includes("/Q1/claim")) {
-      claimCalls += 1;
       return jsonResponse(200, { contract_version: 2, lease_token: "L1", item: item("Q1", { lease: ours }) });
     }
     if (m === "POST" && url.includes("/Q1/heartbeat")) return jsonResponse(200, { contract_version: 2 });
     if (m === "PATCH" && url.endsWith("/queue/Q1")) {
       patchCalls += 1;
-      return errResponse(412, "PRECONDITION_FAILED", { current_etag: "e2" }, { ETag: "e2" });
+      // first PATCH -> 412 (etag e2); retry PATCH -> lease was reclaimed elsewhere -> 409.
+      if (patchCalls === 1) return errResponse(412, "PRECONDITION_FAILED", { current_etag: "e2" }, { ETag: "e2" });
+      return errResponse(409, "LEASE_EXPIRED");
     }
     return errResponse(500, "NO_ROUTE");
   });
@@ -196,10 +195,64 @@ test("412 then GET shows lease.active:false -> abandoned, verdict not written ag
   });
   const r = summary.results[0];
   assert.equal(r.outcome, "lease_lost");
-  assert.equal(r.detail, "lease_not_held");
-  assert.equal(patchCalls, 1); // only the attempt that got 412; never re-PATCHed
-  assert.equal(getCalls, 2);
-  assert.equal(claimCalls, 1);
+  assert.equal(r.detail, "LEASE_EXPIRED");
+  assert.equal(patchCalls, 2); // original + one retry that hit the 409
+  assert.equal(getCalls, 1); // no GET inside the 412 branch
+});
+
+test("412 retry then 409 TERMINAL_IMMUTABLE on the PATCH -> superseded, not written", async () => {
+  let patchCalls = 0;
+  const client = makeClient(async (url, init) => {
+    const m = init.method;
+    if (isGet(url, init, "Q1")) return single("Q1", "e1", ours);
+    if (isList(url, init)) {
+      return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
+    }
+    if (m === "POST" && url.includes("/Q1/claim")) {
+      return jsonResponse(200, { contract_version: 2, lease_token: "L1", item: item("Q1", { lease: ours }) });
+    }
+    if (m === "POST" && url.includes("/Q1/heartbeat")) return jsonResponse(200, { contract_version: 2 });
+    if (m === "PATCH" && url.endsWith("/queue/Q1")) {
+      patchCalls += 1;
+      if (patchCalls === 1) return errResponse(412, "PRECONDITION_FAILED", { current_etag: "e2" }, { ETag: "e2" });
+      return errResponse(409, "ALREADY_SUPERSEDED");
+    }
+    return errResponse(500, "NO_ROUTE");
+  });
+  const summary = await verifyFromReconLab(client, "/tmp", { workerId: "w1" }, {
+    runVerification: async () => verifiedStage("confirmed"),
+  });
+  const r = summary.results[0];
+  assert.equal(r.outcome, "superseded");
+  assert.equal(r.detail, "ALREADY_SUPERSEDED");
+  assert.equal(patchCalls, 2);
+});
+
+test("pre-write GET shows superseded_by set -> superseded, never PATCHed", async () => {
+  let patchCalls = 0;
+  const client = makeClient(async (url, init) => {
+    const m = init.method;
+    if (isGet(url, init, "Q1")) return single("Q1", "e1", ours, { superseded_by: "Q42" });
+    if (isList(url, init)) {
+      return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
+    }
+    if (m === "POST" && url.includes("/Q1/claim")) {
+      return jsonResponse(200, { contract_version: 2, lease_token: "L1", item: item("Q1", { lease: ours }) });
+    }
+    if (m === "POST" && url.includes("/Q1/heartbeat")) return jsonResponse(200, { contract_version: 2 });
+    if (m === "PATCH") {
+      patchCalls += 1;
+      return jsonResponse(200, { contract_version: 2 });
+    }
+    return errResponse(500, "NO_ROUTE");
+  });
+  const summary = await verifyFromReconLab(client, "/tmp", { workerId: "w1" }, {
+    runVerification: async () => verifiedStage("confirmed"),
+  });
+  const r = summary.results[0];
+  assert.equal(r.outcome, "superseded");
+  assert.equal(r.detail, "superseded_by:Q42");
+  assert.equal(patchCalls, 0);
 });
 
 test("pre-write clean read shows lease held by another worker -> lease_lost, never written", async () => {

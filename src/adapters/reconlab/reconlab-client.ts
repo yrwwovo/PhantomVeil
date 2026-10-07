@@ -40,6 +40,8 @@ export class ReconLabError extends Error {
   readonly code: string;
   readonly data?: Record<string, unknown>;
   readonly retryAfter?: number;
+  /** Current content version off the response ETag header (e.g. on a 412). */
+  readonly etag?: string;
 
   constructor(args: {
     status: number;
@@ -47,6 +49,7 @@ export class ReconLabError extends Error {
     message: string;
     data?: Record<string, unknown>;
     retryAfter?: number;
+    etag?: string;
   }) {
     super(args.message);
     this.name = "ReconLabError";
@@ -54,6 +57,7 @@ export class ReconLabError extends Error {
     this.code = args.code;
     this.data = args.data;
     this.retryAfter = args.retryAfter;
+    this.etag = args.etag;
   }
 }
 
@@ -217,7 +221,8 @@ export class ReconLabClient {
     const message = typeof body?.message === "string" ? body.message : `ReconLab HTTP ${res.status}`;
     const data = asRecord(body?.data);
     const retryAfter = res.status === 429 ? this.retryAfterSeconds(res) : undefined;
-    return new ReconLabError({ status: res.status, code, message, data, retryAfter });
+    const etag = headerGet(res.headers, "ETag");
+    return new ReconLabError({ status: res.status, code, message, data, retryAfter, ...(etag ? { etag } : {}) });
   }
 
   private async request(
