@@ -9,6 +9,15 @@ export type HypothesisStatus =
   | "rejected"
   | "inconclusive";
 
+export const PARAMETER_LOCATIONS = ["query", "body", "header", "cookie", "path"] as const;
+
+/**
+ * ReconLab v2 contract enum: WHERE a vulnerable parameter sits. This is a
+ * stable, fixed set of values (unlike reason_code, whose allowed values come
+ * from the ReconLab rubric API and are validated in a later step).
+ */
+export type ParameterLocation = (typeof PARAMETER_LOCATIONS)[number];
+
 export interface HypothesisEvidenceRef {
   evidence_id: string;
   file_path: string;
@@ -20,6 +29,8 @@ export interface HypothesisCandidateIdentity {
   endpoint: string;
   parameter_name: string;
   fingerprint: string;
+  /** ReconLab v2: where the affected parameter sits. */
+  location?: ParameterLocation;
 }
 
 export interface HypothesisHistoryEntry {
@@ -27,6 +38,8 @@ export interface HypothesisHistoryEntry {
   to: HypothesisStatus;
   changed_at: string;
   reason: string;
+  /** ReconLab v2: structured reason code for a rejected/inconclusive verdict. */
+  reason_code?: string;
   event?: "status_change" | "evidence_attached";
 }
 
@@ -58,6 +71,8 @@ export interface CreateHypothesisInput {
 export interface TransitionHypothesisInput {
   to: HypothesisStatus;
   reason: string;
+  /** ReconLab v2: optional structured reason code recorded on this transition. */
+  reason_code?: string;
   evidence_files?: string[];
   reproduction_steps?: string[];
 }
@@ -115,7 +130,8 @@ function validHttpUrl(value: string): boolean {
 function validCandidateIdentity(value: HypothesisCandidateIdentity | undefined): boolean {
   if (!value) return true;
   if (value.kind !== "reflected_xss" || !nonEmpty(value.parameter_name) ||
-      !/^[a-f0-9]{64}$/u.test(value.fingerprint)) return false;
+      !/^[a-f0-9]{64}$/u.test(value.fingerprint) ||
+      (value.location !== undefined && !PARAMETER_LOCATIONS.includes(value.location))) return false;
   try {
     const endpoint = new URL(value.endpoint);
     return (endpoint.protocol === "http:" || endpoint.protocol === "https:") &&
@@ -359,6 +375,9 @@ export async function transitionHypothesis(
           to: input.to,
           changed_at: changedAt,
           reason: input.reason.trim(),
+          ...(nonEmpty(input.reason_code ?? "")
+            ? { reason_code: input.reason_code!.trim() }
+            : {}),
         },
       ],
     },

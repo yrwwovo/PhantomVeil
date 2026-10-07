@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 
+import type { ParameterLocation } from "../hypotheses/hypothesis-manager.ts";
 import { HypothesisStore } from "../hypotheses/hypothesis-store.ts";
 import { createDefaultVerifierRegistry } from "../verifiers/index.ts";
 import type { VerificationJudgment } from "../verifiers/verifier-plugin.ts";
@@ -14,6 +15,8 @@ export interface VerifyHypothesisInput {
   kind: string;
   endpoint?: string;
   parameter_name?: string;
+  /** ReconLab v2: where the affected parameter sits. */
+  location?: ParameterLocation;
   /** Plugin-specific verify inputs (opaque; shape depends on the plugin). */
   metadata?: Record<string, unknown>;
   evidence_ids?: string[];
@@ -108,6 +111,7 @@ export async function runVerifyHypothesis(
       kind: input.kind,
       ...(input.endpoint ? { endpoint: input.endpoint } : {}),
       ...(input.parameter_name ? { parameter_name: input.parameter_name } : {}),
+      ...(input.location ? { location: input.location } : {}),
       ...(input.metadata ? { metadata: input.metadata } : {}),
       ...(input.evidence_ids ? { evidence_ids: input.evidence_ids } : {}),
     },

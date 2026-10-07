@@ -8,6 +8,7 @@ import type { Hypothesis, HypothesisStatus } from "./hypothesis-manager.ts";
 const HYPOTHESIS_ID = /^HYP-\d{14}-[a-f0-9]{8}$/u;
 const SHA256 = /^[a-f0-9]{64}$/u;
 const MAX_FILE_BYTES = 1024 * 1024;
+const PARAMETER_LOCATIONS = new Set(["query", "body", "header", "cookie", "path"]);
 const STATUSES = new Set<HypothesisStatus>([
   "suspected",
   "testing",
@@ -120,6 +121,8 @@ function validHypothesis(value: unknown): value is Hypothesis {
     if (!object(candidate) || candidate.kind !== "reflected_xss" ||
         !nonEmpty(candidate.parameter_name) || candidate.parameter_name.length > 256 ||
         typeof candidate.fingerprint !== "string" || !SHA256.test(candidate.fingerprint) ||
+        (candidate.location !== undefined &&
+          (typeof candidate.location !== "string" || !PARAMETER_LOCATIONS.has(candidate.location))) ||
         !nonEmpty(candidate.endpoint)) return false;
     try {
       const endpoint = new URL(candidate.endpoint);
@@ -165,6 +168,7 @@ function validHypothesis(value: unknown): value is Hypothesis {
       !status(entry.to) ||
       !timestamp(entry.changed_at) ||
       !nonEmpty(entry.reason) ||
+      (entry.reason_code !== undefined && !nonEmpty(entry.reason_code)) ||
       (entry.event !== undefined && entry.event !== "status_change" &&
         entry.event !== "evidence_attached")
     ) return false;

@@ -654,6 +654,7 @@ export class HermesTaskService {
       kind: string;
       endpoint?: string;
       parameter_name?: string;
+      location?: "query" | "body" | "header" | "cookie" | "path";
       metadata?: Record<string, unknown>;
       evidence_ids?: string[];
     },

@@ -1,4 +1,4 @@
-import type { HypothesisStatus } from "../hypotheses/hypothesis-manager.ts";
+import type { HypothesisStatus, ParameterLocation } from "../hypotheses/hypothesis-manager.ts";
 
 /**
  * Generic vulnerability-verifier plugin framework.
@@ -26,6 +26,8 @@ export interface VerifierCandidate {
   endpoint: string;
   /** Affected parameter, when the class is parameter-scoped. */
   parameter_name?: string;
+  /** ReconLab v2: where the affected parameter sits (query/body/header/cookie/path). */
+  location?: ParameterLocation;
   /** Linked hypothesis to transition once a verdict is reached. */
   hypothesis_id?: string;
   /** Supporting evidence ids already attached to the hypothesis. */
@@ -50,6 +52,12 @@ export interface VerificationJudgment {
   reproduction_steps: string[];
   /** Caveats that bound the verdict. */
   limitations: string[];
+  /**
+   * ReconLab v2: optional structured reason code for a rejected/inconclusive
+   * verdict. Allowed values come from the ReconLab rubric API (validated in a
+   * later step), so this stays a free-form optional string here.
+   */
+  reason_code?: string;
   /** Evidence ids backing the verdict. */
   evidence_ids: string[];
 }

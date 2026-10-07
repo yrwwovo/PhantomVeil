@@ -1,4 +1,4 @@
-import type { Hypothesis, HypothesisStatus } from "../hypotheses/hypothesis-manager.ts";
+import type { Hypothesis, HypothesisStatus, ParameterLocation } from "../hypotheses/hypothesis-manager.ts";
 import { transitionHypothesis } from "../hypotheses/hypothesis-manager.ts";
 import type {
   VerificationJudgment,
@@ -29,6 +29,8 @@ export interface VerificationCandidateInput {
   /** Overrides the endpoint derived from the hypothesis when provided. */
   endpoint?: string;
   parameter_name?: string;
+  /** ReconLab v2: where the affected parameter sits. */
+  location?: ParameterLocation;
   /** Plugin-specific verify inputs (e.g. XSS proofs, redirect samples). */
   metadata?: Record<string, unknown>;
   /** Extra evidence ids beyond those already on the hypothesis. */
@@ -86,6 +88,8 @@ function buildCandidate(input: VerificationStageInput): VerifierCandidate {
     hypothesis.target_url;
   const parameter_name =
     candidate.parameter_name ?? hypothesis.candidate_identity?.parameter_name;
+  const location =
+    candidate.location ?? hypothesis.candidate_identity?.location;
   const existingEvidence = hypothesis.evidence.map((ref) => ref.evidence_id);
   const evidence_ids = [
     ...new Set([...existingEvidence, ...(candidate.evidence_ids ?? [])]),
@@ -94,6 +98,7 @@ function buildCandidate(input: VerificationStageInput): VerifierCandidate {
     kind: candidate.kind,
     endpoint,
     ...(parameter_name ? { parameter_name } : {}),
+    ...(location ? { location } : {}),
     hypothesis_id: hypothesis.hypothesis_id,
     evidence_ids,
     ...(candidate.metadata ? { metadata: candidate.metadata } : {}),
@@ -134,6 +139,7 @@ export async function runVerificationStage(
         reason: isFinal ? judgment.rationale : `进入验证（${plugin_id}）`,
         // Reproduction steps matter on the confirming step; dedup is handled
         // by the manager. Evidence already attached to the hypothesis is reused.
+        ...(isFinal && judgment.reason_code ? { reason_code: judgment.reason_code } : {}),
         ...(isFinal && judgment.reproduction_steps.length > 0
           ? { reproduction_steps: judgment.reproduction_steps }
           : {}),
