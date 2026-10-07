@@ -58,6 +58,12 @@ export interface VerificationJudgment {
    * later step), so this stays a free-form optional string here.
    */
   reason_code?: string;
+  /** ReconLab v2 gate input: verdict confidence score (0-100). */
+  confidence?: number;
+  /** ReconLab v2 gate input: verification checks satisfied (reproduce/control/cross/active/...). */
+  checks?: string[];
+  /** ReconLab v2 gate input: evidence kinds backing the verdict (e.g. http_exchange). */
+  evidence_kinds?: string[];
   /** Evidence ids backing the verdict. */
   evidence_ids: string[];
 }

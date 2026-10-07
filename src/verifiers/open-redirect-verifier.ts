@@ -107,6 +107,9 @@ export function judgeOpenRedirectProbes(
   if (distinctHonored.size >= 2) {
     return {
       outcome: "confirmed",
+      confidence: 90,
+      checks: ["reproduce", "control"],
+      evidence_kinds: ["http_exchange"],
       rationale: "对照组未外跳，而两个不同的站外目标都被原样跟随为 3xx 跳转，确认存在开放重定向",
       reproduction_steps: [
         "以站内目标请求该参数时，响应未跳转到站外（对照组）",

@@ -7,6 +7,10 @@ import type {
 } from "../verifiers/verifier-plugin.ts";
 import { planHypothesisTransitions } from "../verifiers/verifier-plugin.ts";
 import type { VerifierRegistry } from "../verifiers/verifier-registry.ts";
+import type { RubricProvider, RubricSource } from "../verifiers/rubric-provider.ts";
+import { createDefaultRubricProvider } from "../verifiers/rubric-provider.ts";
+import type { RubricIssue } from "../verifiers/rubric-gate.ts";
+import { evaluateRubric } from "../verifiers/rubric-gate.ts";
 
 /**
  * Verification stage of the main chain.
@@ -44,6 +48,8 @@ export interface VerificationStageInput {
   registry: VerifierRegistry;
   context: VerifierContext;
   candidate: VerificationCandidateInput;
+  /** Supplies ReconLab rubric rows for the enforcement gate; defaults to the bundled offline provider. */
+  rubricProvider?: RubricProvider;
   now?: () => Date;
   /** Persist each transition as it happens; a failure aborts the stage. */
   commit?: (hypothesis: Hypothesis) => Promise<VerificationCommitResult>;
@@ -57,6 +63,10 @@ export type VerificationStageResult =
       vulnerability: string;
       outcome: VerificationJudgment["outcome"];
       judgment: VerificationJudgment;
+      rubric_source: RubricSource;
+      rubric_kind: string;
+      rubric_exact_match: boolean;
+      warnings: RubricIssue[];
       transitions_applied: HypothesisStatus[];
       hypothesis: Hypothesis;
     }
@@ -76,6 +86,21 @@ export type VerificationStageResult =
       vulnerability: string;
       outcome: VerificationJudgment["outcome"];
       judgment: VerificationJudgment;
+      transitions_applied: HypothesisStatus[];
+      hypothesis: Hypothesis;
+    }
+  | {
+      ok: false;
+      code: "RUBRIC_VIOLATION";
+      reason: string;
+      plugin_id: string;
+      vulnerability: string;
+      outcome: VerificationJudgment["outcome"];
+      judgment: VerificationJudgment;
+      errors: RubricIssue[];
+      rubric_source: RubricSource;
+      rubric_kind: string;
+      rubric_exact_match: boolean;
       transitions_applied: HypothesisStatus[];
       hypothesis: Hypothesis;
     };
@@ -109,6 +134,7 @@ export async function runVerificationStage(
   input: VerificationStageInput,
 ): Promise<VerificationStageResult> {
   const { hypothesis, registry, context, now, commit } = input;
+  const rubricProvider = input.rubricProvider ?? createDefaultRubricProvider();
   const candidate = buildCandidate(input);
   const run = await registry.run(candidate, context);
 
@@ -124,6 +150,16 @@ export async function runVerificationStage(
   }
 
   const { judgment, plugin_id, vulnerability } = run;
+
+  // Shared ReconLab rubric gate: resolve the row for this kind and evaluate the
+  // judgment before any confirmed transition is written (the platform does the
+  // same enforcement server-side). Only tunable gates are checked here.
+  const rubric = await rubricProvider.getRubric(candidate.kind);
+  const rubric_source = rubricProvider.source;
+  const rubric_kind = rubric.kind;
+  const rubric_exact_match = rubric.kind === candidate.kind;
+  const evaluation = evaluateRubric(rubric, judgment);
+
   const plan = planHypothesisTransitions(hypothesis.status, judgment.outcome);
   const target = judgment.outcome; // resting state the plan drives toward
 
@@ -132,6 +168,24 @@ export async function runVerificationStage(
 
   for (const step of plan) {
     const isFinal = step === target;
+    if (isFinal && evaluation.blocked) {
+      // Enforced rubric violated: refuse to write confirmed, like the platform 422.
+      return {
+        ok: false,
+        code: "RUBRIC_VIOLATION",
+        reason: "confirmed verdict violates the enforced ReconLab rubric; not written",
+        plugin_id,
+        vulnerability,
+        outcome: judgment.outcome,
+        judgment,
+        errors: evaluation.errors,
+        rubric_source,
+        rubric_kind,
+        rubric_exact_match,
+        transitions_applied: applied,
+        hypothesis: current,
+      };
+    }
     const transition = await transitionHypothesis(
       current,
       {
@@ -186,6 +240,10 @@ export async function runVerificationStage(
     vulnerability,
     outcome: judgment.outcome,
     judgment,
+    rubric_source,
+    rubric_kind,
+    rubric_exact_match,
+    warnings: evaluation.warnings,
     transitions_applied: applied,
     hypothesis: current,
   };

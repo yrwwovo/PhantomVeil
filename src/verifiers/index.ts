@@ -6,6 +6,8 @@ export * from "./verifier-plugin.ts";
 export * from "./verifier-registry.ts";
 export * from "./reflected-xss-verifier.ts";
 export * from "./open-redirect-verifier.ts";
+export * from "./rubric-provider.ts";
+export * from "./rubric-gate.ts";
 
 /**
  * Build the registry with every shipped verifier plugin registered. Adding a

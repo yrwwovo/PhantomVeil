@@ -87,6 +87,9 @@ export function judgeReflectedXssProofs(
   if (executed) {
     return {
       outcome: "confirmed",
+      confidence: 95,
+      checks: ["reproduce", "control"],
+      evidence_kinds: ["http_exchange"],
       rationale: "对照组未执行，而试验载荷在网络隔离的浏览器中成功执行，确认存在反射型 XSS",
       reproduction_steps: [
         "在网络隔离的浏览器中加载目标响应，对照组的无害标记未被执行",

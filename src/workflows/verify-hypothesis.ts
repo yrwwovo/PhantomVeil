@@ -4,6 +4,8 @@ import path from "node:path";
 import type { ParameterLocation } from "../hypotheses/hypothesis-manager.ts";
 import { HypothesisStore } from "../hypotheses/hypothesis-store.ts";
 import { createDefaultVerifierRegistry } from "../verifiers/index.ts";
+import type { RubricProvider, RubricSource } from "../verifiers/rubric-provider.ts";
+import type { RubricIssue } from "../verifiers/rubric-gate.ts";
 import type { VerificationJudgment } from "../verifiers/verifier-plugin.ts";
 import { runVerificationStage } from "./verification-stage.ts";
 
@@ -35,6 +37,9 @@ export type VerifyHypothesisResult =
       transitions_applied: string[];
       rationale: string;
       file_path: string;
+      rubric_source: RubricSource;
+      rubric_exact_match: boolean;
+      warnings: RubricIssue[];
     }
   | {
       ok: false;
@@ -47,10 +52,12 @@ export type VerifyHypothesisResult =
         | "NO_VERIFIER"
         | "AMBIGUOUS_VERIFIER"
         | "TRANSITION_FAILED"
-        | "PERSIST_FAILED";
+        | "PERSIST_FAILED"
+        | "RUBRIC_VIOLATION";
       reason: string;
       hypothesis_id: string;
       plugin_ids?: string[];
+      errors?: RubricIssue[];
     };
 
 /**
@@ -63,6 +70,7 @@ export async function runVerifyHypothesis(
   projectRoot: string,
   input: VerifyHypothesisInput,
   artifactNamespace: "opencode" | "hermes" = "opencode",
+  rubricProvider?: RubricProvider,
 ): Promise<VerifyHypothesisResult> {
   if (!input || typeof input.hypothesis_id !== "string" || !HYP_ID.test(input.hypothesis_id)) {
     return { ok: false, code: "INVALID_ID", reason: "请提供合法的 HYP 假设编号", hypothesis_id: input?.hypothesis_id ?? "" };
@@ -102,6 +110,7 @@ export async function runVerifyHypothesis(
   const result = await runVerificationStage({
     hypothesis: loaded.hypothesis,
     registry,
+    ...(rubricProvider ? { rubricProvider } : {}),
     context: {
       projectRoot: path.resolve(projectRoot),
       authorization_reference: loaded.hypothesis.authorization_reference ?? "",
@@ -133,7 +142,13 @@ export async function runVerifyHypothesis(
         ...(result.plugin_ids ? { plugin_ids: result.plugin_ids } : {}),
       };
     }
-    return { ok: false, code: result.code, reason: result.reason, hypothesis_id: input.hypothesis_id };
+    return {
+      ok: false,
+      code: result.code,
+      reason: result.reason,
+      hypothesis_id: input.hypothesis_id,
+      ...("errors" in result && result.errors ? { errors: result.errors } : {}),
+    };
   }
 
   return {
@@ -148,5 +163,8 @@ export async function runVerifyHypothesis(
     transitions_applied: result.transitions_applied,
     rationale: result.judgment.rationale,
     file_path: loaded.file_path,
+    rubric_source: result.rubric_source,
+    rubric_exact_match: result.rubric_exact_match,
+    warnings: result.warnings,
   };
 }
