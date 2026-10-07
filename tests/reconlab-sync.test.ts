@@ -417,3 +417,26 @@ test("redirect hop out of scope -> scope_void before verification write", async 
   assert.equal(summary.results[0].outcome, "scope_void");
   assert.equal(patchCalls, 0);
 });
+
+test("409 on the first PATCH (supersede check precedes If-Match) -> superseded, no successor write", async () => {
+  for (const code of ["ALREADY_SUPERSEDED", "TERMINAL_IMMUTABLE", "ALREADY_FINAL"]) {
+    let patchCalls = 0;
+    const patchedPaths: string[] = [];
+    const client = makeClient(async (url, init) => {
+      const m = init.method;
+      // pre-write GET: clean record, lease ours, NO superseded_by.
+      if (isGet(url, init, "Q1")) return single("Q1", "e1", ours);
+      if (isList(url, init)) return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
+      if (m === "POST" && url.includes("/Q1/claim")) return jsonResponse(200, { contract_version: 2, lease_token: "L1", item: item("Q1", { lease: ours }) });
+      if (m === "POST" && url.includes("/Q1/heartbeat")) return jsonResponse(200, { contract_version: 2 });
+      if (m === "PATCH") { patchCalls += 1; patchedPaths.push(url); return errResponse(409, code); }
+      return errResponse(500, "NO_ROUTE");
+    });
+    const summary = await verifyFromReconLab(client, "/tmp", { workerId: "w1" }, { runVerification: async () => verifiedStage("confirmed") });
+    const r = summary.results[0];
+    assert.equal(r.outcome, "superseded", code);
+    assert.equal(r.detail, code);
+    assert.equal(patchCalls, 1, code); // direct 409 on the FIRST PATCH; no 412 dance
+    assert.ok(patchedPaths.every((p) => p.endsWith("/queue/Q1")), code); // never PATCHed a successor / superseded_by
+  }
+});

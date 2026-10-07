@@ -336,9 +336,16 @@ export async function verifyFromReconLab(
         if (["LEASE_EXPIRED", "NO_LEASE"].includes(error.code)) {
           return { id, outcome: "lease_lost", detail: error.code, attempts };
         }
-        // 409 terminal / superseded under us => minimal abandon. PROVISIONAL: the
-        // ReconLab dev is still confirming whether etag is recomputed on supersede,
-        // which decides if this path is even reachable. Keep this logic minimal.
+        // 409 terminal / superseded on the PATCH -> abandon as superseded. This is
+        // a CONFIRMED live path (ReconLab dev, 2026-10-07), not dead code: the
+        // server runs its "already superseded" check BEFORE If-Match, so PATCHing a
+        // superseded record always returns 409 ALREADY_SUPERSEDED and never a 412 --
+        // independent of whether the etag was recomputed on supersede. We hold a
+        // lease only on the original record id, never on any successor, so we do NOT
+        // write onto superseded_by here; that successor is processed separately as
+        // its own claimed queue item. TERMINAL_IMMUTABLE / ALREADY_FINAL are
+        // human-signoff freezes. Behavior is unchanged: outcome "superseded",
+        // detail = error.code.
         if (["TERMINAL_IMMUTABLE", "ALREADY_SUPERSEDED", "ALREADY_FINAL"].includes(error.code)) {
           return { id, outcome: "superseded", detail: error.code, attempts };
         }
