@@ -39,13 +39,13 @@ OpenCode 是项目的智能体运行与扩展底座；Codex 和 ChatGPT 是当�
 
 ### Phant0mV3il 终端入口
 
-`pveil` 是 PhantomVeil 的终端入口。它不重新实现对话引擎，而是在本项目目录中启动 OpenCode TUI，并固定选择项目内定义的受限 Agent `Phant0mV3il`：
+`pveil` 是 PhantomVeil 的终端入口。它不重新实现对话引擎，而是进入项目内定义的受限 Agent `Phant0mV3il` 的对话。默认运行时为 Hermes：无参数的 `pveil`（等价于 `pveil chat` 或 `pveil chat --runtime hermes`）进入未绑定目标的隔离 Hermes 受限会话。需要回退到 OpenCode TUI 时，显式使用 `pveil chat --runtime opencode`：
 
 ```powershell
 pveil
 ```
 
-当前终端必须能找到兼容的 `opencode` CLI；也可以用 `OPENCODE_BIN` 指定可执行文件。项目已验证的集成基线是 OpenCode 1.18.29。OpenCode 的模型与凭据仍由 OpenCode 自己管理。
+使用 `pveil chat --runtime opencode` 回退时，当前终端必须能找到兼容的 `opencode` CLI；也可以用 `OPENCODE_BIN` 指定可执行文件。项目已验证的集成基线是 OpenCode 1.18.29。OpenCode 的模型与凭据仍由 OpenCode 自己管理。Hermes 默认会话由 fork 运行时启动，使用其原生凭据。
 
 不需要 LLM 时，可直接复用现有确定性工作流：
 
@@ -110,7 +110,7 @@ npm run scan -- http://127.0.0.1:5000/
 
 ### Hermes 交互式受限任务入口
 
-也可从项目统一命令显式选择运行底层；当前无参数 `pveil` 仍启动 OpenCode。日常 Hermes 入口验证稳定后，再把统一命令的默认运行时切到 Hermes：
+统一命令现在默认使用 Hermes 运行时：无参数 `pveil`（或 `pveil chat`、`pveil chat --runtime hermes`，均不带其它参数）进入未绑定目标的隔离 Hermes 受限会话。显式定向任务与 OpenCode 回退如下：
 
 ```powershell
 npm run pveil -- chat --runtime hermes --url 'http://127.0.0.1:5000/' --authorization-reference 'TASK-你的授权引用'

@@ -45,14 +45,16 @@ export function chooseOpenCodeCandidate(candidates: string[]): string | undefine
 const HELP = `${PHANTOMVEIL_TITLE} - 授权 Web 安全 Agent
 
 用法：
-  pveil                  进入 OpenCode 终端对话界面
-  pveil chat             进入 OpenCode 终端对话界面
-  pveil chat --runtime opencode
-                         显式进入 OpenCode（回退入口）
+  pveil                  进入 Hermes PhantomVeil 受限会话（默认运行时）
+  pveil chat             同上
+  pveil chat --runtime hermes
+                         同上（显式指定 Hermes）
   pveil chat --runtime hermes --url <URL> --authorization-reference <REF> [--crawl|--reflection|--redirect|--encoding|--assessment]
-                         进入本次授权的 Hermes PhantomVeil 任务
+                         进入本次授权的 Hermes 定向任务
   pveil chat --runtime hermes --url <URL> --new-target
                          登记一个只读目标并进入 Hermes
+  pveil chat --runtime opencode
+                         显式回退到 OpenCode 终端（旧默认）
   pveil check <URL>      执行一次受限单页检查（无需 LLM）
   pveil crawl <URL>      执行受限同源爬取（无需 LLM）
   pveil --help           显示帮助
@@ -170,7 +172,7 @@ async function runDeterministicCommand(
   return result.ok ? 0 : 2;
 }
 
-/** `pveil` 的最小入口：对话复用 OpenCode，检查命令复用现有确定性工作流。 */
+/** `pveil` 的最小入口：默认对话进入 Hermes 受限会话，OpenCode 为显式回退；检查命令复用现有确定性工作流。 */
 export async function runPveil(
   projectRoot: string,
   args: string[],
@@ -193,7 +195,47 @@ export async function runPveil(
   if (args[0] === "check" || args[0] === "crawl") {
     return runDeterministicCommand(args[0], args.slice(1), root, { stdout, stderr, runCheck, runCrawl });
   }
-  if (args[0] === "chat" && args[1] === "--runtime" && args[2] === "hermes") {
+  const launchHermesUnbound = (): number => {
+    const script = path.join(root, "scripts", "hermes-chat.mjs");
+    if ((stdout as NodeJS.WriteStream).isTTY) stdout.write(`\u001B]0;${PHANTOMVEIL_PRODUCT_NAME}\u0007`);
+    writeLine(stdout, BANNER);
+    const result = launchHermes(script, [], { cwd: root, env });
+    if (result.error) {
+      writeLine(stderr, `Hermes 会话启动失败：${result.error.message}`);
+      return 2;
+    }
+    return result.status ?? 2;
+  };
+
+  const launchOpenCodeChat = (): number => {
+    const openCode = locate(env);
+    if (!openCode) {
+      writeLine(stderr, "未找到 OpenCode CLI。请先安装与项目兼容的 OpenCode，或用 OPENCODE_BIN 指定可执行文件。");
+      writeLine(stderr, "当前已验证的项目集成基线是 OpenCode 1.18.29。");
+      return 2;
+    }
+    if ((stdout as NodeJS.WriteStream).isTTY) stdout.write(`\u001B]0;${PHANTOMVEIL_PRODUCT_NAME}\u0007`);
+    writeLine(stdout, BANNER);
+    const tuiConfig = path.join(root, ".opencode", "phantomveil-tui.json");
+    const result = launch(openCode, [root, "--agent", PHANTOMVEIL_AGENT], {
+      cwd: root,
+      env: { ...env, OPENCODE_TUI_CONFIG: tuiConfig },
+    });
+    if (result.error) {
+      writeLine(stderr, `OpenCode 启动失败：${result.error.message}`);
+      return 2;
+    }
+    return result.status ?? 2;
+  };
+
+  // 显式回退到 OpenCode（旧默认）。
+  if (args.length === 3 && args[0] === "chat" && args[1] === "--runtime" && args[2] === "opencode") {
+    return launchOpenCodeChat();
+  }
+
+  // Hermes 是当前默认运行时。定向任务需要 URL 与授权引用。
+  const hermesChat = args[0] === "chat" && args[1] === "--runtime" && args[2] === "hermes";
+  if (hermesChat && args.length > 3) {
     const taskArgs = parseHermesChatArgs(args.slice(3));
     if (!taskArgs) {
       writeLine(stderr, "Hermes 任务参数无效。使用 pveil --help 查看用法；新目标只能登记只读任务。");
@@ -211,31 +253,14 @@ export async function runPveil(
     }
     return result.status ?? 2;
   }
-  const openCodeChat = args.length === 0 ||
+
+  // 无参、`chat` 或 `chat --runtime hermes` 都进入未绑定的 Hermes 受限会话。
+  const hermesDefault = args.length === 0 ||
     (args.length === 1 && args[0] === "chat") ||
-    (args.length === 3 && args[0] === "chat" && args[1] === "--runtime" && args[2] === "opencode");
-  if (!openCodeChat) {
+    (args.length === 3 && hermesChat);
+  if (!hermesDefault) {
     writeLine(stderr, `未知参数：${args.join(" ")}。使用 pveil --help 查看可用命令。`);
     return 2;
   }
-
-  const openCode = locate(env);
-  if (!openCode) {
-    writeLine(stderr, "未找到 OpenCode CLI。请先安装与项目兼容的 OpenCode，或用 OPENCODE_BIN 指定可执行文件。");
-    writeLine(stderr, "当前已验证的项目集成基线是 OpenCode 1.18.29。");
-    return 2;
-  }
-
-  if ((stdout as NodeJS.WriteStream).isTTY) stdout.write(`\u001B]0;${PHANTOMVEIL_PRODUCT_NAME}\u0007`);
-  writeLine(stdout, BANNER);
-  const tuiConfig = path.join(root, ".opencode", "phantomveil-tui.json");
-  const result = launch(openCode, [root, "--agent", PHANTOMVEIL_AGENT], {
-    cwd: root,
-    env: { ...env, OPENCODE_TUI_CONFIG: tuiConfig },
-  });
-  if (result.error) {
-    writeLine(stderr, `OpenCode 启动失败：${result.error.message}`);
-    return 2;
-  }
-  return result.status ?? 2;
+  return launchHermesUnbound();
 }

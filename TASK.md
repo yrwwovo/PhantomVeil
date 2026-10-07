@@ -1,5 +1,7 @@
 # PhantomVeil 当前任务交接（2026-10-02）
 
+> 2026-10-06 默认运行时切换：`src/cli/pveil.ts` 与 `npm run pveil` 现在默认进入 Hermes。无参数 `pveil`、`pveil chat`、`pveil chat --runtime hermes`（均不带其它参数）都转交 `scripts/hermes-chat.mjs` 无参启动，进入未绑定目标的隔离 Hermes 受限会话（与 PATH 上 fork 的 `pveil` 行为一致，使用原生凭据，不强制终端设置 DEEPSEEK_API_KEY）。显式定向任务 `pveil chat --runtime hermes --url ... --authorization-reference ...`（或 `--new-target` / `--crawl|--reflection|--redirect|--encoding|--assessment`）保持原隔离任务启动器与 DEEPSEEK_API_KEY 门禁不变。`pveil chat --runtime opencode` 为显式回退，仍启动受限 OpenCode TUI。已更新 HELP 文案、`tests/pveil-cli.test.ts`（无参默认改为断言 Hermes，新增 `chat`/`--runtime hermes` 覆盖，OpenCode 缺失用例改用显式回退）与 README 默认说明；`npm test` 213 项 209 通过 0 失败（4 跳过）。本机本地提交，未推送。
+
 > 2026-10-05 日常 Hermes 入口第 2 步：无参 `scripts/hermes-chat.ps1` 现在进入未绑定的隔离 Hermes 会话；用户在聊天中直接说「这是已授权目标 URL」后，受限 MCP `authorized_target_bind` 显示精确目标与路径并请求人类确认。确认前任务没有任何允许 URL，HTTP 工具拒绝；明确禁止主机/路径拒绝绑定；确认后仅在仓库外本次任务登记只读授权、锁定一个精确 URL 和一次请求预算，不修改项目本地配置。旧的配置自动选择入口保留为 `-ConfiguredTarget`，显式 `-Url` 模式不变。定向本机回归 12/12 通过，包含真实 Hermes CLI 读取新 profile、MCP 工具调用和旧只读协议夹具；真实 DeepSeek 中文会话尚未运行，不能声称模型一定会正确选择绑定工具。无参 `pveil` 仍是 OpenCode，默认切换待日常 Hermes 交互验证。
 
 > 2026-10-05 日常 Hermes 入口第 1 步：`scripts/hermes-chat.ps1` 现可无参数启动。Node 启动器离线读取项目本地 Scope、HTTP 策略与授权登记；唯一精确只读目标自动绑定，多目标或宽泛范围启动前询问精确 URL，再优先选择精确匹配、允许动作较少的授权引用。无有效授权拒绝，仍仅创建原有一次请求的只读隔离任务。会话内中文登记目标尚未实现，留待下一步。

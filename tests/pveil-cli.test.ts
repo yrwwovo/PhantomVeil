@@ -55,29 +55,47 @@ test("TUI 首页加载可替换的 PhantomVeil 品牌组件", async () => {
   assert.doesNotMatch(plugin, /fetch\s*\(|node:(?:http|https|net|child_process)/u);
 });
 
-test("pveil 无参数时以受限 Agent 启动 OpenCode TUI", async () => {
+test("pveil 无参时默认进入未绑定的 Hermes 受限会话", async () => {
   const stdout = writer();
   const stderr = writer();
-  let invocation: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv } | undefined;
+  let hermes: { script: string; args: string[]; cwd: string } | undefined;
+  let openCodeCalled = false;
   const status = await runPveil("D:/example/project", [], {
     stdout: stdout.stream,
     stderr: stderr.stream,
-    env: { TEST_ONLY: "1" },
-    locateOpenCode: () => "C:/tools/opencode.exe",
-    launchOpenCode: (command, args, options) => {
-      invocation = { command, args, cwd: options.cwd, env: options.env };
+    env: {},
+    locateOpenCode: () => { openCodeCalled = true; return "C:/tools/opencode.exe"; },
+    launchOpenCode: () => { openCodeCalled = true; return { status: 0 }; },
+    launchHermesTask: (script, args, options) => {
+      hermes = { script, args, cwd: options.cwd };
       return { status: 0 };
     },
   });
 
   assert.equal(status, 0);
-  assert.match(stdout.read(), /Phant0mV3il/u);
+  assert.equal(openCodeCalled, false);
   assert.equal(stderr.read(), "");
-  assert.equal(invocation?.command, "C:/tools/opencode.exe");
-  assert.deepEqual(invocation?.args, ["D:\\example\\project", "--agent", PHANTOMVEIL_AGENT]);
-  assert.equal(invocation?.cwd, "D:\\example\\project");
-  assert.match(invocation?.env.OPENCODE_TUI_CONFIG ?? "", /phantomveil-tui\.json$/u);
-  assert.equal(invocation?.args.includes("--auto"), false);
+  assert.equal(hermes?.script, "D:\\example\\project\\scripts\\hermes-chat.mjs");
+  assert.deepEqual(hermes?.args, []);
+  assert.equal(hermes?.cwd, "D:\\example\\project");
+});
+
+test("pveil chat 与 chat --runtime hermes 都进入未绑定 Hermes 会话", async () => {
+  for (const args of [["chat"], ["chat", "--runtime", "hermes"]]) {
+    let hermesArgs: string[] | undefined;
+    let openCodeCalled = false;
+    const status = await runPveil("D:/example/project", args, {
+      stdout: writer().stream,
+      stderr: writer().stream,
+      env: {},
+      locateOpenCode: () => { openCodeCalled = true; return "C:/tools/opencode.exe"; },
+      launchOpenCode: () => { openCodeCalled = true; return { status: 0 }; },
+      launchHermesTask: (_script, received) => { hermesArgs = received; return { status: 0 }; },
+    });
+    assert.equal(status, 0);
+    assert.equal(openCodeCalled, false);
+    assert.deepEqual(hermesArgs, []);
+  }
 });
 
 test("pveil 显式 Hermes 任务只转交隔离启动器，不调用 OpenCode", async () => {
@@ -139,10 +157,10 @@ test("pveil 显式 OpenCode 回退保持原受限 TUI 配置", async () => {
   assert.deepEqual(args, ["D:\\example\\project", "--agent", PHANTOMVEIL_AGENT]);
 });
 
-test("缺少 OpenCode CLI 时明确拒绝，不尝试替代网络或 Shell 能力", async () => {
+test("显式回退 OpenCode 但缺少 OpenCode CLI 时明确拒绝", async () => {
   const stderr = writer();
   let launched = false;
-  const status = await runPveil(".", [], {
+  const status = await runPveil(".", ["chat", "--runtime", "opencode"], {
     stderr: stderr.stream,
     stdout: writer().stream,
     locateOpenCode: () => undefined,
