@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
@@ -96,6 +96,7 @@ test("run routes to the single matching plugin and returns its judgment", async 
 
 test("default registry ships the reflected-xss plugin", () => {
   const registry = createDefaultVerifierRegistry();
-  assert.deepEqual(registry.list().map((plugin) => plugin.id), ["reflected-xss"]);
+  assert.deepEqual(registry.list().map((plugin) => plugin.id), ["reflected-xss", "open-redirect"]);
   assert.ok(registry.get("reflected-xss"));
+  assert.ok(registry.get("open-redirect"));
 });
