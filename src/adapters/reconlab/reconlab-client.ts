@@ -2,6 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 
 import { HttpRubricProvider, type RubricProvider } from "../../verifiers/rubric-provider.ts";
+import type {
+  Budget,
+  ScanFinding,
+  ScanFindingsResult,
+  ScanHandle,
+  ScanPort,
+  ScanRequest,
+  ScanState,
+  ScanStats,
+  ScanStatus,
+  ScopeCheck,
+} from "./scan-port.ts";
 
 /**
  * ReconLab v2 contract HTTP client (PhantomVeil side).
@@ -168,7 +180,7 @@ function toBuffer(bytes: Uint8Array | ArrayBuffer | Buffer | string): Buffer {
   return Buffer.from(bytes as Uint8Array);
 }
 
-export class ReconLabClient {
+export class ReconLabClient implements ScanPort {
   readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
@@ -512,5 +524,69 @@ export class ReconLabClient {
   async getContractMeta(): Promise<unknown> {
     const res = await this.request("GET", "/api/contract/meta");
     return res.body;
+  }
+
+  // --- scans (contract v2 scan-trigger, "Option A2") ----------------------
+  //
+  // Real HTTP against the three NEW endpoints. The shared request() helper
+  // already sends Authorization: Bearer + X-Contract-Version and runs the
+  // bounded 429/Retry-After loop. Non-2xx throws ReconLabError (branch on
+  // .code: OUT_OF_SCOPE / SCOPE_EXPIRED / IDEMPOTENCY_* / RATE_LIMITED /
+  // NOT_FOUND / BUDGET_EXHAUSTED). getScanFindings NEVER decides finality --
+  // the caller must gate on complete === true AND state === "done".
+
+  /** POST /api/scans. Idempotency-Key is required by the contract (a stable
+   *  client UUID, NOT a content hash); a duplicate key returns the SAME scan. */
+  async createScan(req: ScanRequest, idempotencyKey: string): Promise<ScanHandle> {
+    const res = await this.request("POST", "/api/scans", {
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: {
+        kind: req.kind,
+        target: req.target,
+        scope_id: req.scope_id,
+        ...(req.args !== undefined ? { args: req.args } : {}),
+      },
+    });
+    const body = asRecord(res.body) ?? {};
+    return { id: body.id as string };
+  }
+
+  /** GET /api/scans/{id}: async state + scope_check + budget (server authority). */
+  async getScan(id: string): Promise<ScanStatus> {
+    const res = await this.request("GET", `/api/scans/${encodeURIComponent(id)}`);
+    const body = asRecord(res.body) ?? {};
+    const scopeRaw = asRecord(body.scope_check);
+    const budgetRaw = asRecord(body.budget);
+    const scope_check: ScopeCheck | undefined = scopeRaw
+      ? {
+          allowed: scopeRaw.allowed === true,
+          scope_id: scopeRaw.scope_id as string,
+          ...(typeof scopeRaw.code === "string" ? { code: scopeRaw.code } : {}),
+        }
+      : undefined;
+    const budget: Budget | undefined = budgetRaw
+      ? { remaining: Number(budgetRaw.remaining), limit: Number(budgetRaw.limit) }
+      : undefined;
+    return {
+      id: (body.id as string) ?? id,
+      state: body.state as ScanState,
+      progress: typeof body.progress === "number" ? body.progress : Number(body.progress ?? 0),
+      ...(body.stats !== undefined ? { stats: body.stats as ScanStats } : {}),
+      ...(typeof body.message === "string" ? { message: body.message } : {}),
+      ...(scope_check ? { scope_check } : {}),
+      ...(budget ? { budget } : {}),
+    };
+  }
+
+  /** GET /api/scans/{id}/findings. 200 even while running: complete:false /
+   *  state:"running" with PARTIAL findings. Pass-through; the caller gates finality. */
+  async getScanFindings(id: string): Promise<ScanFindingsResult> {
+    const res = await this.request("GET", `/api/scans/${encodeURIComponent(id)}/findings`);
+    const body = asRecord(res.body) ?? {};
+    return {
+      state: body.state as ScanState,
+      complete: body.complete === true,
+      findings: (body.findings as ScanFinding[]) ?? [],
+    };
   }
 }
