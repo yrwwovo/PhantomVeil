@@ -295,6 +295,28 @@ test("claim 409 ALREADY_CLAIMED -> item skipped, no write", async () => {
   assert.equal(patchCalls, 0);
 });
 
+test("claim 409 ALREADY_SUPERSEDED / TERMINAL_IMMUTABLE -> superseded at claim, never verified or PATCHed", async () => {
+  for (const code of ["ALREADY_SUPERSEDED", "TERMINAL_IMMUTABLE"]) {
+    let patchCalls = 0;
+    let verifyCalls = 0;
+    const client = makeClient(async (url, init) => {
+      const m = init.method;
+      if (isList(url, init)) return jsonResponse(200, { contract_version: 2, items: [item("Q1")], count: 1, next_cursor: null });
+      if (m === "POST" && url.includes("/Q1/claim")) return errResponse(409, code, { superseded_by: "Q2" });
+      if (m === "PATCH") { patchCalls += 1; return jsonResponse(200, { contract_version: 2 }); }
+      return errResponse(500, "NO_ROUTE");
+    });
+    const summary = await verifyFromReconLab(client, "/tmp", { workerId: "w1" }, {
+      runVerification: async () => { verifyCalls += 1; return verifiedStage("confirmed"); },
+    });
+    const r = summary.results[0];
+    assert.equal(r.outcome, "superseded", code);
+    assert.equal(r.detail, code);
+    assert.equal(patchCalls, 0, code); // claim failure terminates the item: no PATCH, no successor write
+    assert.equal(verifyCalls, 0, code);
+  }
+});
+
 test("403 SCOPE_EXPIRED mid-flight (pre-write heartbeat) -> scope_void", async () => {
   let patchCalls = 0;
   const client = makeClient(async (url, init) => {

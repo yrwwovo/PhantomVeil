@@ -378,6 +378,13 @@ export async function verifyFromReconLab(
       if (["ALREADY_CLAIMED", "ALREADY_FINAL"].includes(error.code)) {
         return { id, outcome: "skipped_claimed", detail: error.code };
       }
+      // The server rejects superseded / frozen records already at claim (409), before
+      // any PATCH is possible (confirmed live, ReconLab dev 2026-10-08). Same semantics
+      // as the PATCH-stage branch: outcome "superseded", detail = error.code. No lease
+      // was acquired, so nothing to release, and we never write onto superseded_by.
+      if (["ALREADY_SUPERSEDED", "TERMINAL_IMMUTABLE"].includes(error.code)) {
+        return { id, outcome: "superseded", detail: error.code };
+      }
       if (["OUT_OF_SCOPE", "SCOPE_EXPIRED"].includes(error.code)) {
         return { id, outcome: "scope_void", detail: error.code };
       }
