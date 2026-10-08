@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -30,7 +30,7 @@ function parseArgs(args) {
   if (![expected, expected + 1].includes(args.length) || args[0] !== "--url" ||
       (!newTarget && args[2] !== "--authorization-reference") ||
       (args.length === expected + 1 && !["--crawl", "--reflection", "--redirect", "--encoding", "--assessment"].includes(mode))) {
-    throw new Error("用法：npm run hermes:chat -- --url URL (--authorization-reference REF | --new-target) [--crawl|--reflection|--redirect|--encoding|--assessment]");
+    throw new Error("用法：npm run hermes:chat -- --url URL (--authorization-reference REF | --new-target) [--crawl|--reflection|--redirect|--encoding|--assessment] [--apk 绝对路径.apk] [--package-name NAME] [--signing-cert-sha256 HEX] [--apk-sha256 HEX]；或仅 --apk 绝对路径.apk 及上述可选字段");
   }
   const [url, reference] = [args[1], newTarget ? "" : args[3]];
   let target;
@@ -47,6 +47,66 @@ function parseArgs(args) {
   return { url, reference, crawl: mode === "--crawl", reflection: mode === "--reflection",
     redirect: mode === "--redirect", encoding: mode === "--encoding",
     assessment: mode === "--assessment", newTarget };
+}
+
+
+const APK_TOOL_NAMES = ["apk_acquire_unpack", "apk_decompile_manifest", "apk_dex_smali_audit", "apk_so_static_audit"];
+
+function assertApkPathShape(apkPath) {
+  if (typeof apkPath !== "string" || !path.isAbsolute(apkPath)) {
+    throw new Error("APK 路径必须是绝对路径");
+  }
+  if (!apkPath.toLowerCase().endsWith(".apk")) throw new Error("APK 路径必须以 .apk 结尾");
+  if (apkPath.split(/[\\/]/).includes("..")) throw new Error("APK 路径不能包含 ..");
+}
+
+async function assertRegularApk(apkPath) {
+  assertApkPathShape(apkPath);
+  let info;
+  try { info = await lstat(apkPath); } catch { throw new Error("APK 路径不是普通文件"); }
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error("APK 路径不是普通文件");
+}
+
+async function placeApk(request, workspace) {
+  await assertRegularApk(request.path);
+  const dest = path.resolve(workspace, path.basename(request.path));
+  const relative = path.relative(path.resolve(workspace), dest);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("APK 副本必须位于会话工作目录内");
+  }
+  await copyFile(request.path, dest);
+  const placed = { path: dest };
+  if (Object.hasOwn(request, "package_name")) placed.package_name = request.package_name;
+  if (Object.hasOwn(request, "signing_cert_sha256")) placed.signing_cert_sha256 = request.signing_cert_sha256;
+  if (Object.hasOwn(request, "apk_sha256")) placed.apk_sha256 = request.apk_sha256;
+  return placed;
+}
+
+function takeApkArgs(args) {
+  const rest = [];
+  const flags = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--apk" || token === "--package-name" || token === "--signing-cert-sha256" || token === "--apk-sha256") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error("用法：npm run hermes:chat -- --apk 绝对路径.apk [--package-name NAME] [--signing-cert-sha256 HEX] [--apk-sha256 HEX]");
+      }
+      if (Object.hasOwn(flags, token)) throw new Error("重复参数 " + token);
+      flags[token] = value;
+      index += 1;
+    } else rest.push(token);
+  }
+  if (!Object.keys(flags).length) return { rest, apk: null };
+  if (!Object.hasOwn(flags, "--apk")) {
+    throw new Error("用法：提供 --package-name、--signing-cert-sha256 或 --apk-sha256 时必须同时提供 --apk");
+  }
+  assertApkPathShape(flags["--apk"]);
+  const apk = { path: flags["--apk"] };
+  if (Object.hasOwn(flags, "--package-name")) apk.package_name = flags["--package-name"];
+  if (Object.hasOwn(flags, "--signing-cert-sha256")) apk.signing_cert_sha256 = flags["--signing-cert-sha256"];
+  if (Object.hasOwn(flags, "--apk-sha256")) apk.apk_sha256 = flags["--apk-sha256"];
+  return { rest, apk };
 }
 
 async function readLocalJson(configDir, name) {
@@ -117,7 +177,7 @@ function outsideSource(root, sourceRoot) {
 export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_ROOT,
   configRoot = sourceRoot, runsRoot = DEFAULT_RUNS_ROOT, model = "deepseek-flash",
   provider = "deepseek", crawl = false, reflection = false, redirect = false,
-  encoding = false, assessment = false }) {
+  encoding = false, assessment = false, apk = null }) {
   if ([crawl, reflection, redirect, encoding, assessment].filter(Boolean).length > 1) {
     throw new Error("一次任务只能选择一种扩展模式");
   }
@@ -152,6 +212,7 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
   const hypothesisEnabled = checkActionAuthorization(targetUrl, authRef,
     "hypothesis_create", registry).authorized;
   if (assessment && !hypothesisEnabled) throw new Error("完整评估缺少 hypothesis_create 授权");
+  if (apk) await assertRegularApk(apk.path);
   const grant = registry.grants.find(item => item.reference === authRef);
   const taskId = `hermes-${randomUUID()}`;
   const runDir = path.join(outputRoot, taskId);
@@ -163,6 +224,7 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
   const promptFile = path.join(runDir, "start-prompt.txt");
   await mkdir(path.join(workspace, "configs"), { recursive: true, mode: 0o700 });
   await mkdir(profile, { recursive: true, mode: 0o700 });
+  const apkField = apk ? await placeApk(apk, workspace) : null;
   const save = (file, value) => writeFile(file, JSON.stringify(value), { flag: "wx", mode: 0o600 });
   await Promise.all([
     save(path.join(workspace, "configs", "scope.local.json"), scope),
@@ -175,7 +237,8 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
       ...(crawl ? { crawl: { seed_url: targetUrl, path_prefix: new URL(targetUrl).pathname } } : {}),
       ...((reflection || redirect || encoding || assessment) ? { active: {
         kind: assessment ? "assessment" : redirect ? "redirect" : encoding ? "encoding" : "reflection", seed_url: targetUrl,
-        path_prefix: new URL(targetUrl).pathname } } : {}) }),
+        path_prefix: new URL(targetUrl).pathname } } : {}),
+      ...(apkField ? { apk: apkField } : {}) }),
   ]);
   const template = await readFile(path.join(root, "benchmarks", "hermes-eval", "profiles",
     "learning-off.yaml"), "utf8");
@@ -195,6 +258,7 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
     ...(encoding ? ["authorized_xss_encoding_probe"] : []),
     ...(encoding && hypothesisEnabled ? ["authorized_xss_hypothesis_triage"] : []),
     ...(hypothesisEnabled ? ["authorized_hypothesis_create", "hypothesis_get"] : [])];
+  if (apkField) toolNames.push(...APK_TOOL_NAMES);
   const config = configuredTemplate +
     `\nbranding:\n  agent_name: "Phant0mV3il"\n  response_label: "Phant0mV3il"\n` +
     `\nmcp_servers:\n  phantomveil-hermes:\n    command: ${yamlString(process.execPath)}\n` +
@@ -247,11 +311,12 @@ export async function prepareHermesChat({ url, reference, sourceRoot = SOURCE_RO
 
 /** Start a session with no target or network grant; only in-chat binding can unlock one read-only task. */
 export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
-  configRoot = sourceRoot, runsRoot = DEFAULT_RUNS_ROOT } = {}) {
+  configRoot = sourceRoot, runsRoot = DEFAULT_RUNS_ROOT, apk = null } = {}) {
   const root = path.resolve(sourceRoot);
   const configBase = path.resolve(configRoot);
   const outputRoot = path.resolve(runsRoot);
   if (!outsideSource(outputRoot, root)) throw new Error("Hermes 任务目录必须位于源码仓库外");
+  if (apk) await assertRegularApk(apk.path);
   const taskId = `hermes-${randomUUID()}`;
   const runDir = path.join(outputRoot, taskId);
   const workspace = path.join(runDir, "workspace");
@@ -261,9 +326,10 @@ export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
   const auditFile = path.join(runDir, "request-decisions.jsonl");
   await mkdir(path.join(workspace, "configs"), { recursive: true, mode: 0o700 });
   await mkdir(profile, { recursive: true, mode: 0o700 });
+  const apkField = apk ? await placeApk(apk, workspace) : null;
   await Promise.all([
     writeFile(taskFile, JSON.stringify({ task_id: taskId, authorization_reference: "",
-      allowed_urls: [], pending_target: true }), { flag: "wx", mode: 0o600 }),
+      allowed_urls: [], pending_target: true, ...(apkField ? { apk: apkField } : {}) }), { flag: "wx", mode: 0o600 }),
     writeFile(path.join(workspace, "configs", "request-budget.local.json"),
       JSON.stringify({ max_requests: 1 }), { flag: "wx", mode: 0o600 }),
   ]);
@@ -277,7 +343,7 @@ export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
     `agent:\n  system_prompt: |-\n${personaBlock}`);
   const toolNames = ["authorized_target_bind", "authorized_web_observe",
     "evidence_entry_inventory", "authorized_task_authorize", "authorized_web_crawl",
-    "evidence_input_inventory"];
+    "evidence_input_inventory", ...(apkField ? APK_TOOL_NAMES : [])];
   const config = configuredTemplate +
     `\nbranding:\n  agent_name: "Phant0mV3il"\n  response_label: "Phant0mV3il"\n` +
     `\nmcp_servers:\n  phantomveil-hermes:\n    command: ${yamlString(process.execPath)}\n` +
@@ -297,13 +363,15 @@ export async function prepareHermesAwaitTargetChat({ sourceRoot = SOURCE_ROOT,
 /** Register a fresh target outside the source tree, then prepare its Hermes task. */
 export async function prepareHermesNewTargetChat({ url, approve, resolveIps,
   sourceRoot = SOURCE_ROOT, runsRoot = DEFAULT_RUNS_ROOT,
-  crawl = false, reflection = false, redirect = false, encoding = false, assessment = false }) {
+  crawl = false, reflection = false, redirect = false, encoding = false, assessment = false,
+  apk = null }) {
   if (crawl || reflection || redirect || encoding || assessment) {
     throw new Error("新目标登记只创建只读任务；主动模式须另行审核动作授权");
   }
   const root = path.resolve(sourceRoot);
   const outputRoot = path.resolve(runsRoot);
   if (!outsideSource(outputRoot, root)) throw new Error("Hermes 任务目录必须位于源码仓库外");
+  if (apk) await assertRegularApk(apk.path);
   parseArgs(["--url", url, "--new-target",
     ...(crawl ? ["--crawl"] : reflection ? ["--reflection"] : redirect ? ["--redirect"] :
       encoding ? ["--encoding"] : assessment ? ["--assessment"] : [])]);
@@ -314,7 +382,7 @@ export async function prepareHermesNewTargetChat({ url, approve, resolveIps,
     if (!setup.ok) throw new Error(`目标登记未完成：${setup.code}；${setup.reason}`);
     return await prepareHermesChat({ url, reference: setup.authorization_reference,
       sourceRoot, configRoot: registrationRoot, runsRoot, crawl, reflection, redirect, encoding,
-      assessment });
+      assessment, apk });
   } finally {
     const relative = path.relative(outputRoot, registrationRoot);
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -339,9 +407,10 @@ export function hermesChatRuntime({ env = process.env, sourceRoot = SOURCE_ROOT 
 
 async function main() {
   const args = process.argv.slice(2);
+  const { rest, apk } = takeApkArgs(args);
   let selection = null;
-  const awaitingTarget = args.length === 0;
-  if (args.length === 1 && args[0] === "--configured-target") {
+  const awaitingTarget = rest.length === 0 && !apk;
+  if (rest.length === 1 && rest[0] === "--configured-target") {
     const consoleInput = createInterface({ input: process.stdin, output: process.stdout });
     try {
       selection = await resolveConfiguredHermesTarget({
@@ -349,8 +418,8 @@ async function main() {
       });
     } finally { consoleInput.close(); }
     process.stdout.write(`本地授权已绑定只读目标：${selection.url}\n`);
-  } else if (!awaitingTarget) {
-    selection = parseArgs(args);
+  } else if (rest.length > 0) {
+    selection = parseArgs(rest);
   }
   const { url, reference, crawl, reflection, redirect, encoding, assessment,
     newTarget } = selection ?? {};
@@ -364,11 +433,14 @@ async function main() {
   if (awaitingTarget) {
     task = await prepareHermesAwaitTargetChat({ configRoot });
     process.stdout.write("PhantomVeil Hermes 会话即将启动。请在对话中说明已授权目标与测试任务；确认绑定前不会请求目标。\n");
+  } else if (!selection) {
+    task = await prepareHermesAwaitTargetChat({ configRoot, apk });
+    process.stdout.write("PhantomVeil Hermes 会话即将启动。本次仅绑定工作目录内的 APK 副本；未授予 Web 目标。\n");
   } else if (newTarget) {
     const consoleInput = createInterface({ input: process.stdin, output: process.stdout });
     try {
       task = await prepareHermesNewTargetChat({ url, crawl, reflection, redirect, encoding,
-        assessment, approve: async details => {
+        assessment, apk, approve: async details => {
         process.stdout.write(`新目标：${details.target}\n允许路径：${details.allowed_path}\n` +
           `包含子域名：否；排除主机/路径：无\n`);
         const answer = await consoleInput.question("确认你已获该目标授权，并登记本次范围？[y/N] ");
@@ -377,7 +449,7 @@ async function main() {
     } finally { consoleInput.close(); }
   } else {
     task = await prepareHermesChat({ url, reference, crawl, reflection, redirect, encoding,
-      assessment, configRoot });
+      assessment, configRoot, apk });
   }
   process.stdout.write(`PhantomVeil Hermes 任务 ${task.taskId}\n记录目录：${task.runDir}\n`);
   const child = spawn(runtime.python, [runtime.runtime, "--session-home", task.profile,

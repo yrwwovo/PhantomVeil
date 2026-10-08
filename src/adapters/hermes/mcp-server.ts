@@ -6,13 +6,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 
 import { HermesTaskService, type HermesTaskGrant } from "./task-service.ts";
+import { ApkTaskService } from "./apk-service.ts";
+import { registerApkTools } from "./mcp-server.apk-additions.ts";
 
 function response(result: { ok: boolean }) {
   return { isError: !result.ok, content: [{ type: "text" as const, text: JSON.stringify(result) }] };
 }
 
 export function createHermesMcpServer(service: HermesTaskService,
-  approvalOverride?: (message: string) => Promise<boolean>): McpServer {
+  approvalOverride?: (message: string) => Promise<boolean>,
+  apkService?: ApkTaskService): McpServer {
   const server = new McpServer({ name: "phantomveil-hermes", version: "0.1.0" });
   const askApproval = async (message: string) => {
     if (approvalOverride) return approvalOverride(message);
@@ -126,7 +129,36 @@ export function createHermesMcpServer(service: HermesTaskService,
   }, async (input) => response(await service.verifyHypothesis(input, details => askApproval(
     `PhantomVeil 将对假设 ${details.hypothesis_id}（类型 ${details.kind}）运行验证器：` +
       "按候选类型自动选插件执行验证，并按状态机经 testing 回写到 confirmed/rejected/inconclusive。是否批准？"))));
+  if (apkService) registerApkTools(server, apkService, askApproval);
   return server;
+}
+
+function sessionApkGrant(task: unknown): {
+  path: string;
+  package_name?: string | null;
+  signing_cert_sha256?: string | null;
+  apk_sha256?: string | null;
+} | null {
+  if (!task || typeof task !== "object" || !("apk" in task)) return null;
+  const apk = (task as { apk?: unknown }).apk;
+  if (!apk || typeof apk !== "object") return null;
+  const pathValue = (apk as { path?: unknown }).path;
+  if (typeof pathValue !== "string" || pathValue.length === 0) return null;
+  const record = apk as { package_name?: unknown; signing_cert_sha256?: unknown; apk_sha256?: unknown };
+  const textOrNull = (value: unknown): string | null | undefined => {
+    if (typeof value === "string") return value;
+    if (value === null) return null;
+    return undefined;
+  };
+  const packageName = textOrNull(record.package_name);
+  const cert = textOrNull(record.signing_cert_sha256);
+  const sha = textOrNull(record.apk_sha256);
+  return {
+    path: pathValue,
+    ...(packageName !== undefined ? { package_name: packageName } : {}),
+    ...(cert !== undefined ? { signing_cert_sha256: cert } : {}),
+    ...(sha !== undefined ? { apk_sha256: sha } : {}),
+  };
 }
 
 async function main() {
@@ -140,7 +172,19 @@ async function main() {
   const service = new HermesTaskService({ projectRoot: path.resolve(root), task, taskFile,
     sourceConfigRoot,
     budgetRoot, auditFile });
-  await createHermesMcpServer(service).connect(new StdioServerTransport());
+  const apkService = new ApkTaskService();
+  const apkGrant = sessionApkGrant(task);
+  if (apkGrant) {
+    const boundApk = await apkService.bindSession({
+      apkPath: apkGrant.path,
+      workRoot: path.resolve(root),
+      package_name: apkGrant.package_name,
+      signing_cert_sha256: apkGrant.signing_cert_sha256,
+      apk_sha256: apkGrant.apk_sha256,
+    });
+    if (!boundApk.ok) process.stderr.write(`apk session bind failed: ${boundApk.code}` + "\n");
+  }
+  await createHermesMcpServer(service, undefined, apkService).connect(new StdioServerTransport());
 }
 
 if (import.meta.filename === process.argv[1]) {
