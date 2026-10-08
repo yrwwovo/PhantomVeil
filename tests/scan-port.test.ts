@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { ReconLabClient, ReconLabError } from "../src/adapters/reconlab/reconlab-client.ts";
 import { StubScanPort } from "../src/adapters/reconlab/scan-stub.ts";
-import { scanThenVerify } from "../src/adapters/reconlab/scan-then-verify.ts";
+import { defaultScanFindingToQueue, scanThenVerify } from "../src/adapters/reconlab/scan-then-verify.ts";
 import { SCAN_ERROR_CODES } from "../src/adapters/reconlab/scan-port.ts";
 import type { ScanFinding, ScanRequest } from "../src/adapters/reconlab/scan-port.ts";
 
@@ -411,4 +411,55 @@ test("scanThenVerify poll timeout before terminal -> timeout", async () => {
     pollTimeoutMs: 50,
   });
   assert.equal(res.outcome, "timeout");
+});
+// ===========================================================================
+// Contract change 1: evidence_refs on findings
+// ===========================================================================
+
+test("client.getScanFindings: round-trips evidence_refs (EV ids) and drops non-string entries", async () => {
+  const client = makeClient(async (url) =>
+    url.endsWith("/findings")
+      ? jsonResponse(200, {
+          contract_version: 2,
+          state: "done",
+          complete: true,
+          findings: [
+            { id: "f1", title: "t", severity: "high", confidence: 80, evidence_refs: ["EV-1", "EV-2", 7, ""] },
+            { id: "f2", title: "no refs", severity: "low" },
+          ],
+        })
+      : errResponse(500, "NO_ROUTE"),
+  );
+  const r = await client.getScanFindings("scan-1");
+  assert.deepEqual(r.findings[0]?.evidence_refs, ["EV-1", "EV-2"]);
+  assert.equal(r.findings[0]?.confidence, 80);
+  assert.equal(r.findings[0]?.title, "t");
+  assert.equal("evidence_refs" in (r.findings[1] ?? {}), false);
+});
+
+test("defaultScanFindingToQueue forwards evidence_refs only when present", () => {
+  const withRefs = defaultScanFindingToQueue(finding("F1", { evidence_refs: ["EV-9"] }), REQ);
+  assert.deepEqual(withRefs.evidence_refs, ["EV-9"]);
+  const without = defaultScanFindingToQueue(finding("F2"), REQ);
+  assert.equal("evidence_refs" in without, false);
+  const empty = defaultScanFindingToQueue(finding("F3", { evidence_refs: [] }), REQ);
+  assert.equal("evidence_refs" in empty, false);
+});
+
+test("scanThenVerify: finding evidence_refs reach the queue-ingest body", async () => {
+  const stub = new StubScanPort({
+    states: ["done"],
+    finalFindings: [finding("F1", { evidence_refs: ["EV-1", "EV-2"] })],
+  });
+  const bodies: Record<string, unknown>[] = [];
+  const client = makeClient(async () => errResponse(500, "NO_ROUTE"));
+  const res = await scanThenVerify(stub, client, "/tmp", { request: REQ, idempotencyKey: "k", workerId: "w1" }, {
+    sleep: async () => {},
+    ingest: async (body) => { bodies.push(body); return { queue_id: "Q1" }; },
+    verify: async () => ({ worker_id: "w1", processed: 0, results: [] }),
+  });
+  assert.equal(res.outcome, "verified");
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(bodies[0]?.evidence_refs, ["EV-1", "EV-2"]);
+  assert.equal(bodies[0]?.source_finding_id, "F1");
 });

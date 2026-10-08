@@ -119,6 +119,11 @@ export function defaultScanFindingToQueue(
     ...(finding.cve_candidates && finding.cve_candidates.length > 0
       ? { cve_candidates: finding.cve_candidates }
       : {}),
+    // EV ids from the ReconLab evidence channel: lets deep verification anchor
+    // to real evidence rather than only the coarse confidence number.
+    ...(finding.evidence_refs && finding.evidence_refs.length > 0
+      ? { evidence_refs: [...finding.evidence_refs] }
+      : {}),
     source: "reconlab-scan",
     source_finding_id: finding.id,
   };

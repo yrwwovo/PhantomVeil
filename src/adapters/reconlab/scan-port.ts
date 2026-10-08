@@ -102,6 +102,12 @@ export interface ScanFinding {
   category?: string;
   parameter?: string;
   confidence?: number;
+  /**
+   * ReconLab evidence-channel ids (EV ids) backing this finding. Deep
+   * verification anchors to these real evidence records, not only to the
+   * coarse `confidence` number. Optional: older/partial findings may omit it.
+   */
+  evidence_refs?: string[];
 }
 
 /**

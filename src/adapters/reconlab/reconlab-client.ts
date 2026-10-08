@@ -579,14 +579,29 @@ export class ReconLabClient implements ScanPort {
   }
 
   /** GET /api/scans/{id}/findings. 200 even while running: complete:false /
-   *  state:"running" with PARTIAL findings. Pass-through; the caller gates finality. */
+   *  state:"running" with PARTIAL findings. Pass-through (evidence_refs is
+   *  normalized to a string[] when present); the caller gates finality. */
   async getScanFindings(id: string): Promise<ScanFindingsResult> {
     const res = await this.request("GET", `/api/scans/${encodeURIComponent(id)}/findings`);
     const body = asRecord(res.body) ?? {};
     return {
       state: body.state as ScanState,
       complete: body.complete === true,
-      findings: (body.findings as ScanFinding[]) ?? [],
+      findings: Array.isArray(body.findings) ? body.findings.map(parseScanFinding) : [],
     };
   }
+}
+
+/** Normalize one wire finding. Unknown fields pass through untouched; only
+ *  evidence_refs is sanitized (kept as string[] of EV ids, dropped if malformed). */
+function parseScanFinding(raw: unknown): ScanFinding {
+  const rec = asRecord(raw) ?? {};
+  const { evidence_refs: refsRaw, ...rest } = rec;
+  const refs = Array.isArray(refsRaw)
+    ? refsRaw.filter((r): r is string => typeof r === "string" && r.length > 0)
+    : undefined;
+  return {
+    ...(rest as unknown as ScanFinding),
+    ...(refs !== undefined ? { evidence_refs: refs } : {}),
+  };
 }
