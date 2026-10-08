@@ -573,6 +573,9 @@ export class ReconLabClient implements ScanPort {
       progress: typeof body.progress === "number" ? body.progress : Number(body.progress ?? 0),
       ...(body.stats !== undefined ? { stats: body.stats as ScanStats } : {}),
       ...(typeof body.message === "string" ? { message: body.message } : {}),
+      ...(typeof body.failure_code === "string" && body.failure_code.length > 0
+        ? { failure_code: body.failure_code }
+        : {}),
       ...(scope_check ? { scope_check } : {}),
       ...(budget ? { budget } : {}),
     };

@@ -14,7 +14,10 @@
  *   - Surfaces scope-denied (OUT_OF_SCOPE / SCOPE_EXPIRED, whether thrown or
  *     returned as scope_check.allowed=false), BUDGET_EXHAUSTED, and a failed scan
  *     state as clear outcomes rather than proceeding.
- *   - Branches on ReconLabError.code, never on message.
+ *   - A `failed` scan is classified by ScanStatus.failure_code (scope-denied
+ *     codes -> scope_denied, BUDGET_EXHAUSTED -> budget_exhausted, anything else
+ *     -> scan_failed); the code is carried through as result.failure_code.
+ *   - Branches on ReconLabError.code / failure_code, never on message.
  */
 
 import { ReconLabError, type ReconLabClient } from "./reconlab-client.ts";
@@ -90,6 +93,8 @@ export interface ScanThenVerifyResult {
   scanId?: string;
   state?: ScanState;
   code?: string;
+  /** ScanStatus.failure_code when the scan ended in `failed` (stable code). */
+  failure_code?: string;
   detail?: string;
   scope_check?: ScopeCheck;
   budget?: Budget;
@@ -211,10 +216,19 @@ export async function scanThenVerify(
       };
     }
     if (status.state === "failed") {
+      // Classify on the stable failure_code, never on the human message.
+      const fc = status.failure_code;
+      const outcome: ScanThenVerifyOutcome =
+        fc !== undefined && SCOPE_DENIED_CODES.includes(fc)
+          ? "scope_denied"
+          : fc === SCAN_ERROR_CODES.BUDGET_EXHAUSTED
+            ? "budget_exhausted"
+            : "scan_failed";
       return {
-        outcome: "scan_failed",
+        outcome,
         scanId,
         state: status.state,
+        ...(fc !== undefined ? { code: fc, failure_code: fc } : {}),
         ...(status.scope_check ? { scope_check: status.scope_check } : {}),
         ...(status.budget ? { budget: status.budget } : {}),
         polls,

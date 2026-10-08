@@ -463,3 +463,77 @@ test("scanThenVerify: finding evidence_refs reach the queue-ingest body", async 
   assert.deepEqual(bodies[0]?.evidence_refs, ["EV-1", "EV-2"]);
   assert.equal(bodies[0]?.source_finding_id, "F1");
 });
+
+// ===========================================================================
+// Contract change 2: failure_code on ScanStatus (branch on code, not message)
+// ===========================================================================
+
+test("client.getScan: maps failure_code separately from the human message", async () => {
+  const client = makeClient(async (url, init) =>
+    init.method === "GET" && url.endsWith("/api/scans/scan-1")
+      ? jsonResponse(200, { contract_version: 2, id: "scan-1", state: "failed", progress: 100, message: "engine crashed", failure_code: "SCAN_FAILED" })
+      : errResponse(500, "NO_ROUTE"),
+  );
+  const s = await client.getScan("scan-1");
+  assert.equal(s.state, "failed");
+  assert.equal(s.failure_code, "SCAN_FAILED");
+  assert.equal(s.message, "engine crashed");
+});
+
+test("SCAN_ERROR_CODES exposes the general SCAN_FAILED code", () => {
+  assert.equal(SCAN_ERROR_CODES.SCAN_FAILED, "SCAN_FAILED");
+});
+
+async function runFailed(failureCode: string | undefined, failureMessage?: string) {
+  const stub = new StubScanPort({
+    states: ["running", "failed"],
+    ...(failureCode !== undefined ? { failureCode } : {}),
+    ...(failureMessage !== undefined ? { failureMessage } : {}),
+  });
+  let ingestCalls = 0;
+  let verifyCalls = 0;
+  const client = makeClient(async () => errResponse(500, "NO_ROUTE"));
+  const res = await scanThenVerify(stub, client, "/tmp", { request: REQ, idempotencyKey: "k", workerId: "w1" }, {
+    sleep: async () => {},
+    ingest: async () => { ingestCalls += 1; return {}; },
+    verify: async () => { verifyCalls += 1; return { worker_id: "w1", processed: 0, results: [] }; },
+  });
+  assert.equal(stub.getFindingsCalls, 0);
+  assert.equal(ingestCalls, 0);
+  assert.equal(verifyCalls, 0);
+  return res;
+}
+
+test("scanThenVerify failed + failure_code SCAN_FAILED -> scan_failed, code carried through", async () => {
+  // Misleading human message on purpose: must NOT be parsed.
+  const res = await runFailed(SCAN_ERROR_CODES.SCAN_FAILED, "OUT_OF_SCOPE BUDGET_EXHAUSTED");
+  assert.equal(res.outcome, "scan_failed");
+  assert.equal(res.state, "failed");
+  assert.equal(res.failure_code, "SCAN_FAILED");
+  assert.equal(res.code, "SCAN_FAILED");
+});
+
+test("scanThenVerify failed + failure_code OUT_OF_SCOPE -> scope_denied", async () => {
+  const res = await runFailed(SCAN_ERROR_CODES.OUT_OF_SCOPE, "something went wrong");
+  assert.equal(res.outcome, "scope_denied");
+  assert.equal(res.failure_code, "OUT_OF_SCOPE");
+});
+
+test("scanThenVerify failed + failure_code SCOPE_EXPIRED -> scope_denied", async () => {
+  const res = await runFailed(SCAN_ERROR_CODES.SCOPE_EXPIRED);
+  assert.equal(res.outcome, "scope_denied");
+  assert.equal(res.failure_code, "SCOPE_EXPIRED");
+});
+
+test("scanThenVerify failed + failure_code BUDGET_EXHAUSTED -> budget_exhausted", async () => {
+  const res = await runFailed(SCAN_ERROR_CODES.BUDGET_EXHAUSTED, "scan failed");
+  assert.equal(res.outcome, "budget_exhausted");
+  assert.equal(res.failure_code, "BUDGET_EXHAUSTED");
+});
+
+test("scanThenVerify failed without failure_code -> scan_failed; message is never parsed", async () => {
+  const res = await runFailed(undefined, "OUT_OF_SCOPE");
+  assert.equal(res.outcome, "scan_failed");
+  assert.equal(res.failure_code, undefined);
+  assert.equal(res.code, undefined);
+});

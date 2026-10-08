@@ -29,7 +29,8 @@ export const TERMINAL_SCAN_STATES: ReadonlySet<ScanState> = new Set<ScanState>([
 
 /**
  * Contract-v2 error codes relevant to the scan endpoints. All but one REUSE the
- * shared v2 error_codes; the ONLY scan-new code is BUDGET_EXHAUSTED. Published at
+ * shared v2 error_codes; the scan-new codes are BUDGET_EXHAUSTED and SCAN_FAILED
+ * (generic terminal failure, surfaced via ScanStatus.failure_code). Published at
  * /api/contract/meta -- these constants only name the branches, they are not the
  * source of truth.
  */
@@ -41,6 +42,8 @@ export const SCAN_ERROR_CODES = {
   RATE_LIMITED: "RATE_LIMITED",
   NOT_FOUND: "NOT_FOUND",
   BUDGET_EXHAUSTED: "BUDGET_EXHAUSTED",
+  /** Generic "scan ended in failed" code (no more specific code applies). */
+  SCAN_FAILED: "SCAN_FAILED",
 } as const;
 
 export type ScanErrorCode = (typeof SCAN_ERROR_CODES)[keyof typeof SCAN_ERROR_CODES];
@@ -85,7 +88,14 @@ export interface ScanStatus {
   /** 0..100. */
   progress: number;
   stats?: ScanStats;
+  /** Human-readable only. NEVER branch on this; use failure_code. */
   message?: string;
+  /**
+   * Stable machine code (from meta's error_codes) explaining a `failed` state,
+   * e.g. SCAN_FAILED / OUT_OF_SCOPE / SCOPE_EXPIRED / BUDGET_EXHAUSTED. Callers
+   * branch on this, never on message. Absent while not failed.
+   */
+  failure_code?: string;
   scope_check?: ScopeCheck;
   budget?: Budget;
 }

@@ -8,6 +8,7 @@
  *     scope_check.allowed=false field, server-authority style)
  *   - BUDGET_EXHAUSTED on create
  *   - running-partial findings (complete:false), never final
+ *   - failed scans carrying a stable failure_code (+ an optional human message)
  *   - idempotency: same key -> SAME scan; missing key -> IDEMPOTENCY_KEY_REQUIRED;
  *     same key + different request -> IDEMPOTENCY_CONFLICT
  *
@@ -39,6 +40,10 @@ export interface StubScanScript {
   budget?: Budget;
   /** stats attached to every getScan status. */
   stats?: ScanStats;
+  /** failure_code attached to getScan statuses whose state is "failed". */
+  failureCode?: string;
+  /** Human message attached to "failed" statuses (must never drive branching). */
+  failureMessage?: string;
   /** getScan state progression; index clamps to the LAST entry (which repeats). */
   states: ScanState[];
   /** findings returned while NOT done (complete:false). */
@@ -141,6 +146,8 @@ export class StubScanPort implements ScanPort {
       ...(this.script.stats ? { stats: this.script.stats } : {}),
       ...(this.script.scopeCheck ? { scope_check: this.script.scopeCheck } : {}),
       ...(this.script.budget ? { budget: this.script.budget } : {}),
+      ...(state === "failed" && this.script.failureCode ? { failure_code: this.script.failureCode } : {}),
+      ...(state === "failed" && this.script.failureMessage ? { message: this.script.failureMessage } : {}),
     };
   }
 
