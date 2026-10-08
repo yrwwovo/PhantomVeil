@@ -140,6 +140,93 @@ export interface ScanFindingsResult {
  */
 export const SCAN_IDEMPOTENCY_NAMESPACE = "1837aa1d-5584-4e1f-b075-6823fd3c657c";
 
+/** Order object keys by Unicode code point (what Python's sort_keys does), NOT
+ *  by UTF-16 code unit (JS default sort); they differ for astral-plane chars. */
+function compareCodePoints(a: string, b: string): number {
+  const ia = a[Symbol.iterator]();
+  const ib = b[Symbol.iterator]();
+  for (;;) {
+    const x = ia.next();
+    const y = ib.next();
+    if (x.done || y.done) return x.done === y.done ? 0 : x.done ? -1 : 1;
+    const d = x.value.codePointAt(0)! - y.value.codePointAt(0)!;
+    if (d !== 0) return d;
+  }
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Canonical JSON text of a JSON-like value, byte-identical to Python's
+ *   json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+ * where obj is the same value with undefined-valued keys removed. Rules:
+ *   - objects: keys sorted by Unicode code point, recursively at every level;
+ *   - keys whose value is undefined are dropped (recursively);
+ *   - arrays: order preserved (an undefined ELEMENT becomes null, as in
+ *     JSON.stringify / Python None);
+ *   - null stays null; strings/booleans/finite numbers are standard JSON
+ *     scalars (JSON.stringify escaping, non-ASCII emitted raw, encode UTF-8);
+ *   - no whitespace.
+ * Serialized by hand (not via a rebuilt object) because JS objects enumerate
+ * integer-like keys ("9" before "10") ahead of insertion order.
+ * Throws TypeError on values with no portable JSON form: non-finite numbers,
+ * bigint, functions, symbols, and non-plain objects (Date, Map, class
+ * instances, ...). Number caveat for other SDKs: JS has no int/float split, so
+ * 2.0 serializes as "2" -- pass integral values as ints in Python.
+ */
+export function canonicalize(value: unknown): string {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return JSON.stringify(value);
+    case "number":
+      if (!Number.isFinite(value)) throw new TypeError(`canonicalize: non-finite number ${value}`);
+      return JSON.stringify(value);
+    case "object": {
+      if (Array.isArray(value)) {
+        return `[${value.map((v) => (v === undefined ? "null" : canonicalize(v))).join(",")}]`;
+      }
+      if (!isPlainObject(value)) throw new TypeError("canonicalize: only plain objects are supported");
+      const parts: string[] = [];
+      for (const k of Object.keys(value).sort(compareCodePoints)) {
+        const v = value[k];
+        if (v === undefined) continue;
+        parts.push(`${JSON.stringify(k)}:${canonicalize(v)}`);
+      }
+      return `{${parts.join(",")}}`;
+    }
+    default:
+      throw new TypeError(`canonicalize: unsupported type ${typeof value}`);
+  }
+}
+
+/**
+ * Canonical UUIDv5 name for a scan request:
+ *   canonicalize([req.kind, req.target, req.scope_id, wireArgs])
+ * i.e. a compact JSON array whose 4th element is the canonical args OBJECT
+ * (embedded as JSON, not as a quoted string).
+ *
+ * wireArgs = JSON.parse(JSON.stringify(req.args)): the key is derived from
+ * EXACTLY what the POST /api/scans body carries (createScan JSON.stringify's the
+ * same args), so wire semantics apply first: undefined-valued keys vanish, null
+ * stays null, toJSON() runs (Date -> ISO string), NaN/Infinity -> null.
+ *
+ * Missing args (req.args === undefined, which createScan omits from the body)
+ * is treated as the empty object {}, so omitting args and passing {} yield the
+ * SAME key -- both mean "no extra parameters" to the scanner. Note null is NOT
+ * missing: {a: null} and {} hash differently.
+ */
+export function scanIdempotencyName(req: ScanRequest): string {
+  const text = req.args === undefined ? undefined : JSON.stringify(req.args);
+  const wireArgs: unknown = text === undefined ? {} : JSON.parse(text);
+  return canonicalize([req.kind, req.target, req.scope_id, wireArgs]);
+}
+
 /**
  * Deterministic, cross-process-stable Idempotency-Key for POST /api/scans.
  *
@@ -148,16 +235,18 @@ export const SCAN_IDEMPOTENCY_NAMESPACE = "1837aa1d-5584-4e1f-b075-6823fd3c657c"
  * must send the SAME key and therefore get back the SAME scan (never a fresh
  * random UUID per call).
  *
- * Key = RFC 4122 UUIDv5(SCAN_IDEMPOTENCY_NAMESPACE, name), where
- *   name = JSON.stringify([req.kind, req.target, req.scope_id])
- * (UTF-8, compact JSON array -> unambiguous field boundaries). Only kind,
- * target and scope_id are hashed; req.args is deliberately NOT part of the key.
- * Values are used verbatim (no trimming / case-folding). Reproducible elsewhere,
- * e.g. Python: uuid.uuid5(uuid.UUID(NS), json.dumps([kind, target, scope_id],
- * separators=(",", ":"), ensure_ascii=False)).
+ * Key = RFC 4122 UUIDv5(SCAN_IDEMPOTENCY_NAMESPACE, utf8(scanIdempotencyName(req)))
+ * where the name hashes kind, target, scope_id AND canonicalize(wire args)
+ * (args JSON round-tripped first, undefined -> {}). Same logical request (args
+ * in any key order) -> same key;
+ * any differing field or arg -> different key. String values are used verbatim
+ * (no trimming / case-folding). Python reproduction:
+ *   uuid.uuid5(uuid.UUID(NS), json.dumps([kind, target, scope_id, args or {}],
+ *              sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+ * (args with undefined-valued keys omitted; None is kept as null).
  */
 export function deriveScanIdempotencyKey(req: ScanRequest): string {
-  const name = JSON.stringify([req.kind, req.target, req.scope_id]);
+  const name = scanIdempotencyName(req);
   const ns = Buffer.from(SCAN_IDEMPOTENCY_NAMESPACE.replace(/-/g, ""), "hex");
   const digest = createHash("sha1").update(ns).update(name, "utf8").digest();
   const b = digest.subarray(0, 16);

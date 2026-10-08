@@ -4,8 +4,19 @@ import test from "node:test";
 import { ReconLabClient, ReconLabError } from "../src/adapters/reconlab/reconlab-client.ts";
 import { StubScanPort } from "../src/adapters/reconlab/scan-stub.ts";
 import { defaultScanFindingToQueue, scanThenVerify } from "../src/adapters/reconlab/scan-then-verify.ts";
-import { SCAN_ERROR_CODES, deriveScanIdempotencyKey } from "../src/adapters/reconlab/scan-port.ts";
+import {
+  SCAN_ERROR_CODES,
+  canonicalize,
+  deriveScanIdempotencyKey,
+  scanIdempotencyName,
+} from "../src/adapters/reconlab/scan-port.ts";
 import type { ScanFinding, ScanPort, ScanRequest } from "../src/adapters/reconlab/scan-port.ts";
+import {
+  CROSS_CHECK_VECTOR,
+  DIFFERENT_KEY_PAIRS,
+  NO_ARGS_VECTOR,
+  SAME_KEY_PAIRS,
+} from "./fixtures/scan-idempotency-fixtures.ts";
 
 // --- mock-fetch helpers (same style as reconlab-sync.test.ts) ---------------
 
@@ -542,16 +553,17 @@ test("scanThenVerify failed without failure_code -> scan_failed; message is neve
 // Contract change 3: deterministic, cross-process-stable scan Idempotency-Key
 // ===========================================================================
 
-test("deriveScanIdempotencyKey: stable UUIDv5 over [kind,target,scope_id] (golden value)", () => {
+test("deriveScanIdempotencyKey: stable UUIDv5; no-args request golden value", () => {
   const k1 = deriveScanIdempotencyKey(REQ);
   const k2 = deriveScanIdempotencyKey({ ...REQ });
   assert.equal(k1, k2);
   assert.match(k1, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-  // Golden value cross-checked with Python uuid.uuid5 -> stable across processes/releases.
-  assert.equal(k1, "f53e2544-4e9b-524b-bf7d-9354f35e2c69");
+  // Cross-checked with Python uuid.uuid5 (args missing -> {}).
+  assert.equal(scanIdempotencyName(REQ), '["http","https://demo.test","scope-1",{}]');
+  assert.equal(k1, "9f251e5e-a8b1-5d48-bded-209cf5d26d0c");
 });
 
-test("deriveScanIdempotencyKey: any differing field -> different key; args not hashed", () => {
+test("deriveScanIdempotencyKey: any differing field -> different key", () => {
   const base = deriveScanIdempotencyKey(REQ);
   assert.notEqual(deriveScanIdempotencyKey({ ...REQ, target: "https://other.test" }), base);
   assert.notEqual(deriveScanIdempotencyKey({ ...REQ, kind: "port" }), base);
@@ -561,8 +573,8 @@ test("deriveScanIdempotencyKey: any differing field -> different key; args not h
     deriveScanIdempotencyKey({ kind: "http", target: "a", scope_id: "bc" }),
     deriveScanIdempotencyKey({ kind: "http", target: "ab", scope_id: "c" }),
   );
-  // Only kind/target/scope_id are part of the key by agreement.
-  assert.equal(deriveScanIdempotencyKey({ ...REQ, args: { ports: "top100" } }), base);
+  // args are part of the key (canonicalized).
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, args: { ports: "top100" } }), base);
 });
 
 test("scanThenVerify: crash-and-retry reuses the derived key -> SAME scan", async () => {
@@ -614,4 +626,195 @@ test("scanThenVerify: explicit idempotencyKey still overrides the derived one", 
   assert.deepEqual(keys, ["explicit-key"]);
   assert.equal(res.idempotencyKey, "explicit-key");
   assert.equal(res.outcome, "no_findings");
+});
+
+// ===========================================================================
+// Idempotency key v2: canonicalize(args) is part of the key
+// ===========================================================================
+
+test("canonicalize: key order independent, sorted recursively, arrays keep order", () => {
+  const a = canonicalize({ b: 1, a: { d: [3, { z: 1, y: 2 }], c: "x" } });
+  const b = canonicalize({ a: { c: "x", d: [3, { y: 2, z: 1 }] }, b: 1 });
+  assert.equal(a, b);
+  assert.equal(a, '{"a":{"c":"x","d":[3,{"y":2,"z":1}]},"b":1}');
+  assert.equal(canonicalize([3, 2, 1]), "[3,2,1]");
+});
+
+test("canonicalize: drops undefined keys (recursively), keeps null, no whitespace", () => {
+  assert.equal(canonicalize({ a: undefined, b: null, c: { d: undefined, e: null } }), '{"b":null,"c":{"e":null}}');
+  assert.equal(canonicalize({}), "{}");
+  // An undefined ARRAY element becomes null (JSON.stringify / Python None).
+  assert.equal(canonicalize([1, undefined, 2]), "[1,null,2]");
+});
+
+test("canonicalize: matches Python sort_keys (integer-like keys, code-point order) + escaping", () => {
+  // JS objects would enumerate "9" before "10"; Python sorts as strings.
+  assert.equal(canonicalize({ "9": 2, "10": 1, a: 3 }), '{"10":1,"9":2,"a":3}');
+  // Code-point order: U+FF01 sorts before U+1F600 (UTF-16 unit order would invert it).
+  assert.equal(canonicalize({ "\u{1F600}": 1, "\uff01": 2 }), '{"\uff01":2,"\u{1F600}":1}');
+  assert.equal(canonicalize({ s: 'q"\\\n\u0001' }), '{"s":"q\\"\\\\\\n\\u0001"}');
+});
+
+test("canonicalize: rejects values without a portable JSON form", () => {
+  assert.throws(() => canonicalize({ x: Number.NaN }), TypeError);
+  assert.throws(() => canonicalize({ x: Number.POSITIVE_INFINITY }), TypeError);
+  assert.throws(() => canonicalize({ x: 1n }), TypeError);
+  assert.throws(() => canonicalize({ x: new Date(0) }), TypeError);
+  assert.throws(() => canonicalize({ x: () => 1 }), TypeError);
+});
+
+test("deriveScanIdempotencyKey: args key order irrelevant; different args differ; missing args === {}", () => {
+  const k1 = deriveScanIdempotencyKey({ ...REQ, args: { depth: 2, opts: { b: true, a: [1, 2] } } });
+  const k2 = deriveScanIdempotencyKey({ ...REQ, args: { opts: { a: [1, 2], b: true }, depth: 2 } });
+  assert.equal(k1, k2);
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, args: { depth: 3, opts: { b: true, a: [1, 2] } } }), k1);
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, args: { depth: 2, opts: { b: true, a: [2, 1] } } }), k1);
+  assert.equal(deriveScanIdempotencyKey({ ...REQ, args: {} }), deriveScanIdempotencyKey(REQ));
+  assert.equal(deriveScanIdempotencyKey({ ...REQ, args: { skip: undefined } }), deriveScanIdempotencyKey(REQ));
+});
+
+test("deriveScanIdempotencyKey: TS <-> Python cross-check vector", () => {
+  // Expected values independently computed with Python:
+  //   uuid.uuid5(uuid.UUID(SCAN_IDEMPOTENCY_NAMESPACE),
+  //              json.dumps([kind, target, scope_id, args], sort_keys=True,
+  //                         separators=(",", ":"), ensure_ascii=False))
+  const req: ScanRequest = {
+    kind: "http",
+    target: "https://demo.test",
+    scope_id: "scope-1",
+    args: { depth: 2, wordlist: "common", nested: { b: 1, a: [3, 2, 1] }, skip: undefined },
+  };
+  assert.equal(
+    scanIdempotencyName(req),
+    '["http","https://demo.test","scope-1",{"depth":2,"nested":{"a":[3,2,1],"b":1},"wordlist":"common"}]',
+  );
+  assert.equal(deriveScanIdempotencyKey(req), "8ede2adf-b732-5283-94ac-b391b47d49a8");
+});
+
+test("deriveScanIdempotencyKey: edge-case vector (int-like/astral keys, escapes) matches Python", () => {
+  const req: ScanRequest = {
+    kind: "dir",
+    target: "https://x.test/p?q=1",
+    scope_id: "s",
+    args: {
+      "10": 1, "9": 2, a: 3, "\uff01": 4, "\u{1F600}": 5, n: null, f: 1.5, neg: -7, t: true,
+      s: 'q"\\\n\u0001\u00e9', arr: [{ z: 1, y: undefined, x: [null] }, "b"],
+    },
+  };
+  assert.equal(deriveScanIdempotencyKey(req), "bce51f3e-35e7-51e8-99a4-853ef438d107");
+});
+
+// ===========================================================================
+// Response-shape alignment with ReconLab's posted samples
+// ===========================================================================
+
+test("client parses ReconLab sample scan responses (extra fields tolerated)", async () => {
+  const client = makeClient(async (url, init) => {
+    if (init.method === "POST" && url.endsWith("/api/scans")) {
+      return jsonResponse(201, {
+        contract_version: 2, id: "scan-7", state: "queued",
+        scope_check: { allowed: true, scope_id: "scope-1" },
+        budget: { remaining: 9, limit: 10 },
+        rate_limit: { limit: 60, remaining: 59, reset_seconds: 30 },
+      });
+    }
+    if (url.endsWith("/api/scans/scan-7/findings")) {
+      return jsonResponse(200, {
+        contract_version: 2, id: "scan-7", state: "done", complete: true, count: 1,
+        findings: [{
+          id: "F1", title: "nginx outdated", severity: "medium", url: "https://demo.test/",
+          service: "http", version: "1.18.0", fingerprint: "nginx/1.18.0", cve_candidates: ["CVE-2021-23017"],
+          evidence_refs: ["EV-00012"], category: "outdated_software", confidence: 60,
+        }],
+      });
+    }
+    if (url.endsWith("/api/scans/scan-7")) {
+      return jsonResponse(200, {
+        contract_version: 2, id: "scan-7", state: "failed", progress: 100, stats: { hosts: 1 },
+        scope_check: { allowed: true, scope_id: "scope-1" }, budget: { remaining: 9, limit: 10 },
+        rate_limit: { limit: 60, remaining: 58, reset_seconds: 29 },
+        failure_code: "SCAN_FAILED", message: "worker crashed",
+      });
+    }
+    return errResponse(500, "NO_ROUTE");
+  });
+  assert.deepEqual(await client.createScan(REQ, "k"), { id: "scan-7" });
+  const s = await client.getScan("scan-7");
+  assert.equal(s.state, "failed");
+  assert.equal(s.failure_code, "SCAN_FAILED");
+  assert.equal(s.message, "worker crashed");
+  assert.deepEqual(s.stats, { hosts: 1 });
+  assert.deepEqual(s.budget, { remaining: 9, limit: 10 });
+  const f = await client.getScanFindings("scan-7");
+  assert.equal(f.complete, true);
+  assert.equal(f.findings[0]?.fingerprint, "nginx/1.18.0");
+  assert.deepEqual(f.findings[0]?.cve_candidates, ["CVE-2021-23017"]);
+  assert.deepEqual(f.findings[0]?.evidence_refs, ["EV-00012"]);
+  assert.equal(f.findings[0]?.confidence, 60);
+});
+
+test("client.createScan: error body code + data.{scope_check,budget} surface on ReconLabError", async () => {
+  const client = makeClient(async () =>
+    errResponse(403, "OUT_OF_SCOPE", { scope_check: { allowed: false, scope_id: "scope-1" }, budget: { remaining: 0, limit: 10 } }),
+  );
+  await assert.rejects(
+    () => client.createScan(REQ, "k"),
+    (e: unknown) =>
+      e instanceof ReconLabError &&
+      e.code === "OUT_OF_SCOPE" &&
+      e.status === 403 &&
+      (e.data?.scope_check as { allowed?: boolean } | undefined)?.allowed === false &&
+      (e.data?.budget as { remaining?: number } | undefined)?.remaining === 0,
+  );
+});
+
+// ===========================================================================
+// Idempotency key == on-the-wire body (JSON round-trip) + boundary pairs
+// ===========================================================================
+
+test("deriveScanIdempotencyKey: raw-JS args with an undefined field === same object without it", () => {
+  const withUndef = deriveScanIdempotencyKey({ ...REQ, args: { depth: 2, skip: undefined } });
+  const without = deriveScanIdempotencyKey({ ...REQ, args: { depth: 2 } });
+  assert.equal(withUndef, without);
+});
+
+test("deriveScanIdempotencyKey: derived from wire args (JSON round-trip semantics)", () => {
+  // toJSON runs and non-finite numbers become null, exactly as in the POST body.
+  assert.equal(
+    deriveScanIdempotencyKey({ ...REQ, args: { since: new Date(0), x: Number.NaN } }),
+    deriveScanIdempotencyKey({ ...REQ, args: { since: "1970-01-01T00:00:00.000Z", x: null } }),
+  );
+});
+
+test("deriveScanIdempotencyKey: key from raw args === key from the args actually POSTed", async () => {
+  let posted: any;
+  const client = makeClient(async (url, init) => {
+    posted = JSON.parse(init.body);
+    return jsonResponse(201, { contract_version: 2, id: "scan-1" });
+  });
+  const req: ScanRequest = { ...REQ, args: { z: 1, skip: undefined, nested: { b: null, a: [2, 1] } } };
+  await client.createScan(req, deriveScanIdempotencyKey(req));
+  assert.equal(
+    deriveScanIdempotencyKey({ kind: posted.kind, target: posted.target, scope_id: posted.scope_id, args: posted.args }),
+    deriveScanIdempotencyKey(req),
+  );
+});
+
+for (const pair of SAME_KEY_PAIRS) {
+  test(`idempotency boundary SAME key: ${pair.name}`, () => {
+    assert.equal(deriveScanIdempotencyKey(pair.a), deriveScanIdempotencyKey(pair.b));
+  });
+}
+
+for (const pair of DIFFERENT_KEY_PAIRS) {
+  test(`idempotency boundary DIFFERENT key: ${pair.name}`, () => {
+    assert.notEqual(deriveScanIdempotencyKey(pair.a), deriveScanIdempotencyKey(pair.b));
+  });
+}
+
+test("idempotency fixtures: cross-check + no-args vectors match exported constants", () => {
+  for (const v of [CROSS_CHECK_VECTOR, NO_ARGS_VECTOR]) {
+    assert.equal(scanIdempotencyName(v.request), v.canonicalName);
+    assert.equal(deriveScanIdempotencyKey(v.request), v.key);
+  }
 });
