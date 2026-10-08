@@ -535,8 +535,10 @@ export class ReconLabClient implements ScanPort {
   // NOT_FOUND / BUDGET_EXHAUSTED). getScanFindings NEVER decides finality --
   // the caller must gate on complete === true AND state === "done".
 
-  /** POST /api/scans. Idempotency-Key is required by the contract (a stable
-   *  client UUID, NOT a content hash); a duplicate key returns the SAME scan. */
+  /** POST /api/scans. Idempotency-Key is required by the contract and ReconLab
+   *  never synthesizes one; a duplicate key returns the SAME scan. Callers should
+   *  pass a deterministic key (see deriveScanIdempotencyKey in scan-port.ts) so a
+   *  crash-and-retry of the same logical scan reuses the same scan. */
   async createScan(req: ScanRequest, idempotencyKey: string): Promise<ScanHandle> {
     const res = await this.request("POST", "/api/scans", {
       headers: { "Idempotency-Key": idempotencyKey },

@@ -30,6 +30,7 @@ import {
 import {
   SCAN_ERROR_CODES,
   SCOPE_DENIED_CODES,
+  deriveScanIdempotencyKey,
   type Budget,
   type ScanFinding,
   type ScanPort,
@@ -61,8 +62,12 @@ export interface IngestOutcome {
 
 export interface ScanThenVerifyArgs {
   request: ScanRequest;
-  /** Stable client-generated UUID (NOT a content hash); duplicate -> same scan. */
-  idempotencyKey: string;
+  /**
+   * Optional explicit Idempotency-Key for createScan (tests / deliberate
+   * re-scans). Default: deriveScanIdempotencyKey(request), deterministic over
+   * kind + target + scope_id, so a crash-and-retry reuses the SAME scan.
+   */
+  idempotencyKey?: string;
   workerId: string;
 }
 
@@ -90,6 +95,8 @@ export interface ScanThenVerifyOptions {
 
 export interface ScanThenVerifyResult {
   outcome: ScanThenVerifyOutcome;
+  /** The Idempotency-Key actually sent to createScan (explicit or derived). */
+  idempotencyKey?: string;
   scanId?: string;
   state?: ScanState;
   code?: string;
@@ -158,6 +165,19 @@ export async function scanThenVerify(
   args: ScanThenVerifyArgs,
   options: ScanThenVerifyOptions = {},
 ): Promise<ScanThenVerifyResult> {
+  const idempotencyKey = args.idempotencyKey ?? deriveScanIdempotencyKey(args.request);
+  const result = await runScanThenVerify(scanPort, client, projectRoot, args, options, idempotencyKey);
+  return { ...result, idempotencyKey };
+}
+
+async function runScanThenVerify(
+  scanPort: ScanPort,
+  client: ReconLabClient,
+  projectRoot: string,
+  args: ScanThenVerifyArgs,
+  options: ScanThenVerifyOptions,
+  idempotencyKey: string,
+): Promise<ScanThenVerifyResult> {
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? Date.now;
   const interval = options.pollIntervalMs ?? 2000;
@@ -176,7 +196,7 @@ export async function scanThenVerify(
   // 1. Create the scan (Idempotency-Key required by contract).
   let scanId: string;
   try {
-    const handle = await scanPort.createScan(args.request, args.idempotencyKey);
+    const handle = await scanPort.createScan(args.request, idempotencyKey);
     scanId = handle.id;
   } catch (error) {
     const mapped = mapScanError(error);

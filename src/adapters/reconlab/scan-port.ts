@@ -18,6 +18,9 @@
  *   2. NEVER treat partial / non-done findings as final (see ScanFindingsResult).
  */
 
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+
 /** Scan families ReconLab exposes. */
 export type ScanKind = "subdomain" | "port" | "http" | "dir" | "vuln" | "poc";
 
@@ -129,6 +132,39 @@ export interface ScanFindingsResult {
   state: ScanState;
   complete: boolean;
   findings: ScanFinding[];
+}
+
+/**
+ * Fixed UUIDv5 namespace for PhantomVeil scan idempotency keys. NEVER change it:
+ * doing so would re-key every logical scan and break crash-and-retry dedupe.
+ */
+export const SCAN_IDEMPOTENCY_NAMESPACE = "1837aa1d-5584-4e1f-b075-6823fd3c657c";
+
+/**
+ * Deterministic, cross-process-stable Idempotency-Key for POST /api/scans.
+ *
+ * ReconLab only honors the Idempotency-Key header and never synthesizes one, so
+ * determinism is OUR responsibility: a crash-and-retry of the same logical scan
+ * must send the SAME key and therefore get back the SAME scan (never a fresh
+ * random UUID per call).
+ *
+ * Key = RFC 4122 UUIDv5(SCAN_IDEMPOTENCY_NAMESPACE, name), where
+ *   name = JSON.stringify([req.kind, req.target, req.scope_id])
+ * (UTF-8, compact JSON array -> unambiguous field boundaries). Only kind,
+ * target and scope_id are hashed; req.args is deliberately NOT part of the key.
+ * Values are used verbatim (no trimming / case-folding). Reproducible elsewhere,
+ * e.g. Python: uuid.uuid5(uuid.UUID(NS), json.dumps([kind, target, scope_id],
+ * separators=(",", ":"), ensure_ascii=False)).
+ */
+export function deriveScanIdempotencyKey(req: ScanRequest): string {
+  const name = JSON.stringify([req.kind, req.target, req.scope_id]);
+  const ns = Buffer.from(SCAN_IDEMPOTENCY_NAMESPACE.replace(/-/g, ""), "hex");
+  const digest = createHash("sha1").update(ns).update(name, "utf8").digest();
+  const b = digest.subarray(0, 16);
+  b[6] = (b[6]! & 0x0f) | 0x50; // version 5
+  b[8] = (b[8]! & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = b.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** The scan-trigger tool interface PhantomVeil drives. */

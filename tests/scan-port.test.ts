@@ -4,8 +4,8 @@ import test from "node:test";
 import { ReconLabClient, ReconLabError } from "../src/adapters/reconlab/reconlab-client.ts";
 import { StubScanPort } from "../src/adapters/reconlab/scan-stub.ts";
 import { defaultScanFindingToQueue, scanThenVerify } from "../src/adapters/reconlab/scan-then-verify.ts";
-import { SCAN_ERROR_CODES } from "../src/adapters/reconlab/scan-port.ts";
-import type { ScanFinding, ScanRequest } from "../src/adapters/reconlab/scan-port.ts";
+import { SCAN_ERROR_CODES, deriveScanIdempotencyKey } from "../src/adapters/reconlab/scan-port.ts";
+import type { ScanFinding, ScanPort, ScanRequest } from "../src/adapters/reconlab/scan-port.ts";
 
 // --- mock-fetch helpers (same style as reconlab-sync.test.ts) ---------------
 
@@ -536,4 +536,82 @@ test("scanThenVerify failed without failure_code -> scan_failed; message is neve
   assert.equal(res.outcome, "scan_failed");
   assert.equal(res.failure_code, undefined);
   assert.equal(res.code, undefined);
+});
+
+// ===========================================================================
+// Contract change 3: deterministic, cross-process-stable scan Idempotency-Key
+// ===========================================================================
+
+test("deriveScanIdempotencyKey: stable UUIDv5 over [kind,target,scope_id] (golden value)", () => {
+  const k1 = deriveScanIdempotencyKey(REQ);
+  const k2 = deriveScanIdempotencyKey({ ...REQ });
+  assert.equal(k1, k2);
+  assert.match(k1, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  // Golden value cross-checked with Python uuid.uuid5 -> stable across processes/releases.
+  assert.equal(k1, "f53e2544-4e9b-524b-bf7d-9354f35e2c69");
+});
+
+test("deriveScanIdempotencyKey: any differing field -> different key; args not hashed", () => {
+  const base = deriveScanIdempotencyKey(REQ);
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, target: "https://other.test" }), base);
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, kind: "port" }), base);
+  assert.notEqual(deriveScanIdempotencyKey({ ...REQ, scope_id: "scope-2" }), base);
+  // Field boundaries are unambiguous (JSON array, not plain concatenation).
+  assert.notEqual(
+    deriveScanIdempotencyKey({ kind: "http", target: "a", scope_id: "bc" }),
+    deriveScanIdempotencyKey({ kind: "http", target: "ab", scope_id: "c" }),
+  );
+  // Only kind/target/scope_id are part of the key by agreement.
+  assert.equal(deriveScanIdempotencyKey({ ...REQ, args: { ports: "top100" } }), base);
+});
+
+test("scanThenVerify: crash-and-retry reuses the derived key -> SAME scan", async () => {
+  const stub = new StubScanPort({ states: ["done"], finalFindings: [finding("F1")] });
+  const keys: string[] = [];
+  let crash = true;
+  const port: ScanPort = {
+    createScan: (req, key) => { keys.push(key); return stub.createScan(req, key); },
+    getScan: async (id) => {
+      if (crash) throw new Error("process crashed after createScan");
+      return stub.getScan(id);
+    },
+    getScanFindings: (id) => stub.getScanFindings(id),
+  };
+  const client = makeClient(async () => errResponse(500, "NO_ROUTE"));
+  const opts = {
+    sleep: async () => {},
+    ingest: async () => ({ queue_id: "Q1" }),
+    verify: async () => ({ worker_id: "w1", processed: 0, results: [] }),
+  };
+
+  // Attempt 1: no explicit key; dies right after the scan was created.
+  await assert.rejects(() => scanThenVerify(port, client, "/tmp", { request: REQ, workerId: "w1" }, opts), /process crashed/);
+  // Attempt 2 ("new process"): same logical request, again no explicit key.
+  crash = false;
+  const res = await scanThenVerify(port, client, "/tmp", { request: { ...REQ }, workerId: "w1" }, opts);
+
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], deriveScanIdempotencyKey(REQ));
+  assert.equal(keys[1], keys[0]);
+  assert.equal(stub.createdIds.length, 1);
+  assert.equal(res.scanId, stub.createdIds[0]);
+  assert.equal(res.idempotencyKey, keys[0]);
+  assert.equal(res.outcome, "verified");
+});
+
+test("scanThenVerify: explicit idempotencyKey still overrides the derived one", async () => {
+  const stub = new StubScanPort({ states: ["done"] });
+  const keys: string[] = [];
+  const port: ScanPort = {
+    createScan: (req, key) => { keys.push(key); return stub.createScan(req, key); },
+    getScan: (id) => stub.getScan(id),
+    getScanFindings: (id) => stub.getScanFindings(id),
+  };
+  const client = makeClient(async () => errResponse(500, "NO_ROUTE"));
+  const res = await scanThenVerify(port, client, "/tmp", { request: REQ, idempotencyKey: "explicit-key", workerId: "w1" }, {
+    sleep: async () => {},
+  });
+  assert.deepEqual(keys, ["explicit-key"]);
+  assert.equal(res.idempotencyKey, "explicit-key");
+  assert.equal(res.outcome, "no_findings");
 });
