@@ -12,7 +12,7 @@
 
 ## 本机启动
 
-配套源码：[PhantomVeil](https://github.com/yrwwovo/PhantomVeil)、[Hermes 运行时](https://github.com/yrwwovo/phantomveil-hermes/tree/phantomveil/main)、[ReconLab](https://github.com/yrwwovo/ReconLab)。后两个仓库为私有仓库，需要拥有者授权才能克隆。
+配套源码：[PhantomVeil](https://github.com/yrwwovo/PhantomVeil)、[Hermes 运行时](https://github.com/yrwwovo/phantomveil-hermes/tree/phantomveil/main)、[ReconLab](https://github.com/yrwwovo/ReconLab)。三个仓库均已公开，可直接克隆源码。
 
 需保留同级目录 `security-agent-lab`、`phantomveil-hermes` 和 `ReconLab/reconlab-console-orchestrator`。Hermes fork 的 `.venv` 与原生模型配置需已安装。
 
